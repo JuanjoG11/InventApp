@@ -42,6 +42,7 @@ async function initApp() {
     initTheme();
     initNetworkStatus();
     registerServiceWorker();
+    hideInstallButtonIfInstalled();
     setupInstallPrompt();
     await loadData();
     await initializeUserSession();
@@ -699,11 +700,29 @@ function registerServiceWorker() {
 }
 
 
+function isAppInstalled() {
+    return window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+}
+
+function hideInstallButtonIfInstalled() {
+    const installButton = document.getElementById('btn-install-app');
+    if (!installButton) return;
+    if (isAppInstalled()) {
+        installButton.style.display = 'none';
+    }
+}
+
 function setupInstallPrompt() {
+    const installButton = document.getElementById('btn-install-app');
+    if (isAppInstalled()) {
+        if (installButton) installButton.style.display = 'none';
+        return;
+    }
+
     window.addEventListener('beforeinstallprompt', event => {
         event.preventDefault();
         deferredInstallPrompt = event;
-        const installButton = document.getElementById('btn-install-app');
         if (installButton) {
             installButton.style.display = 'inline-flex';
         }
