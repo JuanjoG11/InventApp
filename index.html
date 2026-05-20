@@ -85,13 +85,16 @@
                 </button>
             </div>
             <div style="display:flex; align-items:center; gap:12px;">
-            <div id="user-display" class="user-display">
-                <div class="user-name-line"><strong id="user-name">Invitado</strong></div>
-                <div class="user-email-line"><small id="user-email"></small></div>
-            </div>
-            <button id="btn-toggle-theme" class="btn btn-secondary btn-sm" onclick="toggleTheme()" title="Cambiar tema">
-                <i data-lucide="moon" id="theme-icon"></i>
-            </button>
+                <div id="user-display" class="user-display">
+                    <div class="user-name-line"><strong id="user-name">Invitado</strong></div>
+                    <div class="user-email-line"><small id="user-email"></small></div>
+                </div>
+                <button id="btn-toggle-theme" class="btn btn-secondary btn-sm" onclick="toggleTheme()" title="Cambiar tema">
+                    <i data-lucide="moon" id="theme-icon"></i>
+                </button>
+                <button id="btn-logout" class="btn btn-danger btn-sm" onclick="logout()" title="Cerrar sesión">
+                    <i data-lucide="log-out"></i> Salir
+                </button>
             </div>
         </header>
 

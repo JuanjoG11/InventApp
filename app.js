@@ -5,6 +5,7 @@
 const AppState = {
     loggedIn: false,
     currentRole: null,
+    currentUserId: null,
     currentUserName: null,
     currentUserEmail: null,
     catalog: [],
@@ -15,7 +16,9 @@ const AppState = {
 
 const SUPABASE_URL = 'https://wfhyzlubzzkvnyztqjrt.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_0pwlDVxz0DAEKHgGAsCB2Q_Ru6TNHKl';
+const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
+let taskSubscription = null;
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
 
 // Catálogo base de prueba por si no cargan Excel
@@ -79,6 +82,21 @@ function showLoginScreen() {
     if (emailInput) emailInput.value = '';
     if (passwordInput) passwordInput.value = '';
 }
+
+window.logout = async function() {
+    if (USE_SUPABASE && supabaseClient) {
+        const { error } = await supabaseClient.auth.signOut();
+        if (error) console.warn('Error cerrando sesión en Supabase:', error);
+    }
+    AppState.loggedIn = false;
+    AppState.currentRole = null;
+    AppState.currentUserId = null;
+    AppState.currentUserName = '';
+    AppState.currentUserEmail = '';
+    document.querySelector('.app-container').style.display = 'none';
+    showLoginScreen();
+    showToast('Sesión cerrada correctamente.', 'success');
+};
 
 async function initializeUserSession() {
     if (!USE_SUPABASE || !supabaseClient) {
@@ -156,6 +174,7 @@ function fallbackLocalLogin(email, password) {
     }
     AppState.loggedIn = true;
     AppState.currentRole = user.role;
+    AppState.currentUserId = null;
     AppState.currentUserName = user.name || (user.role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = email;
     updateRoleSwitcherVisibility(user.role);
@@ -172,6 +191,7 @@ async function signInUser(user) {
     const role = await getSupabaseUserRole(user);
     AppState.loggedIn = true;
     AppState.currentRole = role;
+    AppState.currentUserId = user?.id || null;
     updateRoleSwitcherVisibility(role);
 
     document.getElementById('login-screen').style.display = 'none';
@@ -180,6 +200,8 @@ async function signInUser(user) {
     AppState.currentUserName = user?.user_metadata?.full_name || user?.email || (role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = user?.email || '';
     updateUserDisplay();
+    await fetchLatestTasks();
+    subscribeTaskAssignments();
     showToast(`Bienvenido ${AppState.currentUserName}`, 'success');
 }
 
@@ -272,6 +294,66 @@ async function fetchSupabaseProducts() {
     }
 }
 
+async function fetchLatestTasks() {
+    if (!supabaseClient) return;
+    const { data, error } = await supabaseClient
+        .from(SUPABASE_TASKS_TABLE)
+        .select('id, payload, status, created_at')
+        .order('created_at', { ascending: false })
+        .limit(1);
+    if (error) {
+        console.warn('Supabase tasks fetch error', error);
+        return;
+    }
+    if (data?.length > 0) {
+        const latest = data[0];
+        if (Array.isArray(latest.payload)) {
+            AppState.todayTasks = latest.payload.map(task => ({ ...task }));
+            saveData();
+            if (AppState.currentRole === 'worker') renderWorkerTasks();
+            updateAdminDashboard();
+        }
+    }
+}
+
+function subscribeTaskAssignments() {
+    if (!supabaseClient || taskSubscription) return;
+
+    const refreshTasks = payload => {
+        const newRow = payload?.new;
+        if (!newRow || !Array.isArray(newRow.payload)) return;
+        AppState.todayTasks = newRow.payload.map(task => ({ ...task }));
+        saveData();
+        if (AppState.currentRole === 'worker') renderWorkerTasks();
+        updateAdminDashboard();
+        if (AppState.currentRole === 'worker') {
+            showToast('Nueva publicación de tareas disponible.', 'success');
+        }
+    };
+
+    taskSubscription = supabaseClient.channel('public:task_assignments')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: SUPABASE_TASKS_TABLE }, refreshTasks)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: SUPABASE_TASKS_TABLE }, refreshTasks)
+        .subscribe(status => {
+            console.log('Task subscription status:', status);
+        });
+}
+
+async function pushTasksToSupabase() {
+    if (!supabaseClient) return;
+    const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
+    const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([{
+        payload: taskPayload,
+        published_by: AppState.currentUserId,
+        published_by_email: AppState.currentUserEmail,
+        status: 'active'
+    }]);
+    if (error) {
+        console.warn('Supabase push tasks error', error);
+        showToast('No se pudo publicar la tarea en tiempo real. Verifica la conexión.', 'warning');
+    }
+}
+
 async function loadData() {
     const savedCatalog = localStorage.getItem('ia_catalog');
     const savedTasks = localStorage.getItem('ia_todayTasks');
@@ -286,6 +368,8 @@ async function loadData() {
     if (USE_SUPABASE) {
         initSupabase();
         await fetchSupabaseProducts();
+        await fetchLatestTasks();
+        subscribeTaskAssignments();
     }
 }
 
@@ -529,13 +613,16 @@ function toggleTaskAssignment(itemId, element) {
     updateAdminDashboard();
 }
 
-function publishDailyTask() {
+async function publishDailyTask() {
     if (AppState.todayTasks.length === 0) {
         showToast('Debes seleccionar productos para publicar.', 'danger');
         return;
     }
-    AppState.counts = []; 
+    AppState.counts = [];
     saveData();
+    if (USE_SUPABASE && supabaseClient) {
+        await pushTasksToSupabase();
+    }
     showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
 }
 

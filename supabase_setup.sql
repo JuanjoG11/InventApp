@@ -46,7 +46,33 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   created_at timestamptz DEFAULT now()
 );
 
--- 5) Datos de ejemplo para products (puedes añadir más filas)
+-- 5) Tabla de tareas asignadas en tiempo real para sincronizar admin -> trabajador
+CREATE TABLE IF NOT EXISTS public.task_assignments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  published_by uuid,
+  published_by_email text,
+  status text DEFAULT 'active',
+  payload jsonb NOT NULL,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE public.task_assignments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "authenticated_select_task_assignments" ON public.task_assignments
+  FOR SELECT
+  USING (auth.role() = 'authenticated');
+
+CREATE POLICY "authenticated_insert_task_assignments" ON public.task_assignments
+  FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
+
+CREATE POLICY "authenticated_update_task_assignments" ON public.task_assignments
+  FOR UPDATE
+  USING (auth.role() = 'authenticated')
+  WITH CHECK (auth.role() = 'authenticated');
+
+-- 6) Datos de ejemplo para products (puedes añadir más filas)
 INSERT INTO public.products (provider, name, code, embalaje, expected_stock, precio)
 VALUES
 ('fleischmann', 'Levadura Fleischmann Fresca 500 G', '90940000', 50, 9146, 4800),
@@ -88,7 +114,7 @@ CREATE POLICY "auth_insert_history" ON public.inventory_history
 -- Profiles: permitir select del propio perfil
 CREATE POLICY "select_own_profile" ON public.profiles
   FOR SELECT
-  USING (auth.uid() = id::text OR auth.role() = 'authenticated');
+  USING (auth.uid()::uuid = id OR auth.role() = 'authenticated');
 
 -- Nota: Ajusta las políticas según tu modelo de seguridad; las anteriores son ejemplos mínimos.
 
