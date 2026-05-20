@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InventApp PWA - Conteo de Inventario Inteligente</title>
+    <meta name="description" content="Aplicación de conteo de inventario.">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="InventApp">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="icon-192.png" type="image/png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- SheetJS for Excel Parsing -->
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+
+    <!-- jsPDF for PDF Generation (local files avoid file:// CORS issues) -->
+    <script src="jspdf.umd.min.js"></script>
+    <script src="jspdf.plugin.autotable.min.js"></script>
+
+    <!-- Supabase client -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="dark-theme">
+    
+    <div id="login-screen" class="login-screen">
+        <div class="login-panel glass-panel login-panel-large">
+            <div class="login-header login-header-centered">
+                <img src="logo.png" alt="InventApp" class="login-logo" onerror="this.onerror=null; this.src='icon-192.png';">
+                <h2>Bienvenido a InventApp</h2>
+            </div>
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label class="input-label" for="login-email">Correo electrónico</label>
+                    <input id="login-email" class="input-form" type="email" placeholder="correo@empresa.com" required>
+                </div>
+                <div class="form-group">
+                    <label class="input-label" for="login-password">Contraseña</label>
+                    <input id="login-password" class="input-form" type="password" placeholder="Ingresa tu contraseña" required>
+                </div>
+                <button class="btn btn-primary btn-block" type="submit">Ingresar</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="app-container" style="display:none;">
+        
+        <!-- Header -->
+        <header class="app-header glass-panel">
+            <div class="logo-area">
+                <div class="logo-icon-wrapper">
+                    <img src="logo.png" onerror="this.onerror=null; this.src='icon-192.png';" alt="InventApp Logo" class="app-logo">
+                </div>
+                <div>
+                    <h1>InventApp</h1>
+                    <p class="tagline">Conteo Inteligente</p>
+                </div>
+            </div>
+            
+            <div class="role-switcher-container">
+                <span class="switcher-label"><i data-lucide="users" class="icon-xs"></i> Rol Activo:</span>
+                <div class="role-selector-pill">
+                    <button id="btn-role-admin" class="role-pill-btn active" onclick="switchRole('admin')">
+                        <i data-lucide="shield-check"></i> Admin
+                    </button>
+                    <button id="btn-role-worker" class="role-pill-btn" onclick="switchRole('worker')">
+                        <i data-lucide="user"></i> Trabajador
+                    </button>
+                </div>
+                <button id="btn-install-app" class="btn btn-secondary btn-sm" onclick="promptInstall()" style="display:none; margin-left: 1rem;">
+                    <i data-lucide="download"></i> Instalar App
+                </button>
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+            <div id="user-display" class="user-display">
+                <div class="user-name-line"><strong id="user-name">Invitado</strong></div>
+                <div class="user-email-line"><small id="user-email"></small></div>
+            </div>
+            <button id="btn-toggle-theme" class="btn btn-secondary btn-sm" onclick="toggleTheme()" title="Cambiar tema">
+                <i data-lucide="moon" id="theme-icon"></i>
+            </button>
+            </div>
+        </header>
+
+        <main class="app-main">
+            
+            <!-- ADMIN VIEWS -->
+            <div id="view-admin" class="role-view active">
+                
+                <section class="metrics-grid">
+                    <div class="metric-card glass-panel">
+                        <div class="metric-header">
+                            <span class="metric-title">Tareas de Hoy</span>
+                            <div class="metric-icon-wrap bg-blue"><i data-lucide="clipboard-list"></i></div>
+                        </div>
+                        <div class="metric-value" id="admin-metric-assigned">0</div>
+                        <div class="metric-footer">Productos para contar hoy</div>
+                    </div>
+                    
+                    <div class="metric-card glass-panel">
+                        <div class="metric-header">
+                            <span class="metric-title">Avance Conteo</span>
+                            <div class="metric-icon-wrap bg-teal"><i data-lucide="trending-up"></i></div>
+                        </div>
+                        <div class="metric-value-container">
+                            <div class="metric-value" id="admin-metric-progress">0%</div>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar-fill" id="admin-progress-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="metric-footer" id="admin-metric-progress-subtitle">0 de 0 productos contados</div>
+                    </div>
+
+                    <div class="metric-card glass-panel">
+                        <div class="metric-header">
+                            <span class="metric-title">Averías Detectadas</span>
+                            <div class="metric-icon-wrap bg-red"><i data-lucide="alert-triangle"></i></div>
+                        </div>
+                        <div class="metric-value" id="admin-metric-alerts">0</div>
+                        <div class="metric-footer text-red">Total de unidades averiadas</div>
+                    </div>
+                </section>
+
+                <div class="tab-navigation glass-panel">
+                    <button class="tab-btn active" onclick="switchAdminTab('assign')">
+                        <i data-lucide="list-plus"></i> Asignar / Subir Excel
+                    </button>
+                    <button class="tab-btn" onclick="switchAdminTab('monitor')">
+                        <i data-lucide="bar-chart-3"></i> Monitor en Vivo
+                    </button>
+                    <button class="tab-btn" onclick="switchAdminTab('history')">
+                        <i data-lucide="history"></i> Historial Completo
+                    </button>
+                </div>
+
+                <!-- Admin Tab: Assign Tasks -->
+                <div id="admin-tab-assign" class="admin-tab-content active">
+                    <div class="section-card glass-panel">
+                        <div class="card-header-actions">
+                            <div>
+                                <h2>Cargar Tareas del Día</h2>
+                                <p class="card-subtitle">Sube un Excel con Código y Nombre, o selecciona manualmente.</p>
+                            </div>
+                            <div class="header-buttons" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                <select id="excel-provider-select" class="input-form" style="padding: 8px 12px; height: 38px;">
+                                    <option value="alpina" selected>Alpina</option>
+                                    <option value="zenu">Zenú</option>
+                                    <option value="fleischmann">Fleischmann</option>
+                                    <option value="unilever">Unilever</option>
+                                    <option value="familia">Familia</option>
+                                    <option value="general">Otro / General</option>
+                                </select>
+                                <input type="file" id="excel-upload" accept=".xlsx, .xls, .csv" class="hidden" onchange="handleExcelUpload(event)">
+                                <button class="btn btn-secondary" onclick="document.getElementById('excel-upload').click()">
+                                    <i data-lucide="file-spreadsheet"></i> Cargar Excel
+                                </button>
+                                <button class="btn btn-primary" onclick="publishDailyTask()">
+                                    <i data-lucide="send"></i> Publicar
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="provider-filters">
+                            <button class="provider-filter-pill active" onclick="filterCatalogByProvider('all')">Todos</button>
+                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('alpina')"><span class="dot alpina"></span>Alpina</button>
+                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('zenu')"><span class="dot zenu"></span>Zenú</button>
+                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('fleischmann')"><span class="dot fleischmann"></span>Fleischmann</button>
+                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('unilever')"><span class="dot unilever"></span>Unilever</button>
+                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('familia')"><span class="dot familia"></span>Familia</button>
+                        </div>
+
+                        <div class="search-box-container">
+                            <i data-lucide="search" class="search-icon"></i>
+                            <input type="text" id="catalog-search" placeholder="Buscar producto..." oninput="handleCatalogSearch()">
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="data-table" id="catalog-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 70px;">¿Contar?</th>
+                                        <th>Producto</th>
+                                        <th>Proveedor</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="catalog-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Tab: Monitor -->
+                <div id="admin-tab-monitor" class="admin-tab-content">
+                    <div class="section-card glass-panel">
+                        <div class="card-header-actions">
+                            <h2>Monitor de Conteo</h2>
+                            <button class="btn btn-success" onclick="finishDay()">
+                                <i data-lucide="file-check"></i> Finalizar Día y Generar PDF
+                            </button>
+                        </div>
+
+                        <div class="monitor-totals-bar margin-top-md" id="monitor-totals-bar">
+                            <div class="total-card total-card-blue">
+                                <i data-lucide="boxes" class="total-card-icon"></i>
+                                <div class="total-card-data">
+                                    <span class="total-label">Dif. Unidades</span>
+                                    <span class="total-value" id="monitor-total-diff-uds">0</span>
+                                </div>
+                            </div>
+                            <div class="total-card total-card-purple">
+                                <i data-lucide="dollar-sign" class="total-card-icon"></i>
+                                <div class="total-card-data">
+                                    <span class="total-label">Dif. Valor ($)</span>
+                                    <span class="total-value" id="monitor-total-diff-valor">$0</span>
+                                </div>
+                            </div>
+                            <div class="total-card total-card-red">
+                                <i data-lucide="alert-triangle" class="total-card-icon"></i>
+                                <div class="total-card-data">
+                                    <span class="total-label">Total Averías</span>
+                                    <span class="total-value" id="monitor-total-averias">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="table-responsive margin-top-md">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Producto</th>
+                                        <th>Emb.</th>
+                                        <th>Inv. Total</th>
+                                        <th>Contado</th>
+                                        <th>Descuadre ($)</th>
+                                        <th>Averías</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="live-detail-table-body">
+                                    <tr><td colspan="6" class="text-center py-4">Esperando conteos...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Tab: History -->
+                <div id="admin-tab-history" class="admin-tab-content">
+                    <div class="section-card glass-panel">
+                        <div class="card-header-actions">
+                            <h2>Historial de Conteos</h2>
+                            <button class="btn btn-danger" onclick="clearAllHistory()">
+                                <i data-lucide="trash-2"></i> Limpiar Todo
+                            </button>
+                        </div>
+
+                        <!-- Filter Controls -->
+                        <div class="history-filters margin-top-md">
+                            <div class="filter-group">
+                                <label class="input-label">Fecha Desde</label>
+                                <input type="date" id="filter-date-from" class="input-form" onchange="applyHistoryFilters()">
+                            </div>
+                            <div class="filter-group">
+                                <label class="input-label">Fecha Hasta</label>
+                                <input type="date" id="filter-date-to" class="input-form" onchange="applyHistoryFilters()">
+                            </div>
+                            <div class="filter-group">
+                                <label class="input-label">Producto</label>
+                                <input type="text" id="filter-product" class="input-form" placeholder="Buscar producto..." oninput="applyHistoryFilters()">
+                            </div>
+                            <div class="filter-group">
+                                <label class="input-label">Proveedor</label>
+                                <select id="filter-provider" class="input-form" onchange="applyHistoryFilters()">
+                                    <option value="all">Todos</option>
+                                    <option value="alpina">Alpina</option>
+                                    <option value="zenu">Zenú</option>
+                                    <option value="fleischmann">Fleischmann</option>
+                                    <option value="unilever">Unilever</option>
+                                    <option value="familia">Familia</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Filtered totals -->
+                        <div id="history-summary" class="monitor-totals-bar margin-top-md" style="display:none;">
+                            <div class="total-card total-card-blue">
+                                <div class="total-card-data">
+                                    <span class="total-label">Dif. Uds (filtrado)</span>
+                                    <span class="total-value" id="hist-total-diff-uds">0</span>
+                                </div>
+                            </div>
+                            <div class="total-card total-card-purple">
+                                <div class="total-card-data">
+                                    <span class="total-label">Dif. Valor (filtrado)</span>
+                                    <span class="total-value" id="hist-total-diff-valor">$0</span>
+                                </div>
+                            </div>
+                            <div class="total-card total-card-red">
+                                <div class="total-card-data">
+                                    <span class="total-label">Averías (filtrado)</span>
+                                    <span class="total-value" id="hist-total-averias">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="history-section" class="table-responsive margin-top-md">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Fecha</th>
+                                        <th>Producto</th>
+                                        <th>Proveedor</th>
+                                        <th>Emb.</th>
+                                        <th>Inv. Total</th>
+                                        <th>Contado</th>
+                                        <th>Dif Uds</th>
+                                        <th>Descuadre ($)</th>
+                                        <th>Averías</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- WORKER VIEWS -->
+            <div id="view-worker" class="role-view">
+                
+                <section class="worker-summary-header">
+                    <div class="worker-welcome">
+                            <h2 id="worker-welcome-name">¡Hola, Auxiliar!</h2>
+                        <p id="worker-assigned-summary">Cargando tareas...</p>
+                    </div>
+                    <div class="worker-stats-row">
+                        <div class="w-stat">
+                            <span class="w-stat-val" id="w-stat-pending">0</span>
+                            <span class="w-stat-lbl">Pendientes</span>
+                        </div>
+                        <div class="w-divider"></div>
+                        <div class="w-stat">
+                            <span class="w-stat-val text-teal" id="w-stat-completed">0</span>
+                            <span class="w-stat-lbl">Completados</span>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="worker-task-grid" id="worker-task-list"></div>
+                
+                <div id="worker-empty-state" class="empty-state hidden">
+                    <i data-lucide="calendar-check" class="empty-state-icon"></i>
+                    <h3>No tienes tareas asignadas</h3>
+                    <p>El administrador no ha publicado productos para contar hoy.</p>
+                </div>
+            </div>
+
+        </main>
+        
+        <footer class="app-footer">
+            <p>InventApp PWA &copy; 2026. Diseñado para control de inventario de alto impacto.</p>
+        </footer>
+    </div>
+
+    <!-- STANDARD WORKER COUNT MODAL -->
+    <div id="count-modal" class="modal-overlay">
+        <div class="modal-content animated zoomIn">
+            
+            <div class="modal-header">
+                <div class="modal-title-wrap">
+                    <span class="provider-tag" id="modal-provider-tag">Proveedor</span>
+                    <h3 id="modal-product-name">Nombre del Producto</h3>
+                    <p class="product-code" id="modal-product-code">Código: --</p>
+                </div>
+                <button class="close-modal-btn" onclick="closeCountModal()">&times;</button>
+            </div>
+            
+            <div class="modal-body" style="display: flex; flex-direction: column; gap: 15px; padding-top: 20px;">
+                
+                <div class="form-group">
+                    <label for="count-cajas" id="label-cajas" class="input-label" style="font-size: 1.05rem;">📦 Total Cajas:</label>
+                    <input type="number" id="count-cajas" class="input-form" style="font-size: 1.8rem; padding: 12px; font-weight: 800; text-align: center;" min="0" value="0">
+                </div>
+
+                <div class="form-group">
+                    <label for="count-unidades" class="input-label" style="font-size: 1.05rem;">🔢 Unidades Sueltas:</label>
+                    <input type="number" id="count-unidades" class="input-form" style="font-size: 1.8rem; padding: 12px; font-weight: 800; text-align: center;" min="0" value="0">
+                </div>
+
+                <div class="form-group">
+                    <label for="count-averias" class="input-label" style="font-size: 1.05rem;">⚠️ Averías / Daños:</label>
+                    <input type="number" id="count-averias" class="input-form text-red" style="font-size: 1.8rem; padding: 12px; font-weight: 800; text-align: center; border-color: #fca5a5; background-color: #fef2f2;" min="0" value="0">
+                </div>
+
+            </div>
+            
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCountModal()">Cancelar</button>
+                <button class="btn btn-success" onclick="submitProductCount()">
+                    <i data-lucide="check-circle-2"></i> Guardar Conteo
+                </button>
+            </div>
+            
+        </div>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+    <script src="app.js"></script>
+</body>
+</html>
