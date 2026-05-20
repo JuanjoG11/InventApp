@@ -238,6 +238,31 @@ h3 { font-size: 1.1rem; font-weight: 600; color: var(--text-primary); }
     z-index: 10;
 }
 
+.network-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    padding: 0.5rem 0.85rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+    transition: var(--transition-smooth);
+    margin-left: 1rem;
+}
+
+.network-status.online {
+    color: #16a34a;
+    background: rgba(22, 163, 74, 0.08);
+    border-color: rgba(22, 163, 74, 0.18);
+}
+
+.network-status.offline {
+    color: #d97706;
+    background: rgba(245, 158, 11, 0.1);
+    border-color: rgba(245, 158, 11, 0.2);
+}
+
 .user-display { text-align: right; color: var(--text-secondary); margin-left: 1rem; }
 .user-display .user-name-line { font-weight: 700; color: var(--text-primary); }
 .user-display .user-email-line { font-size: 0.8rem; color: var(--text-muted); }

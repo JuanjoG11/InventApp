@@ -83,6 +83,10 @@
                 <button id="btn-install-app" class="btn btn-secondary btn-sm" onclick="promptInstall()" style="display:none; margin-left: 1rem;">
                     <i data-lucide="download"></i> Instalar App
                 </button>
+                <button id="btn-force-refresh" class="btn btn-secondary btn-sm" onclick="forceAppUpdate()" style="margin-left: 1rem;">
+                    <i data-lucide="refresh-cw"></i> Actualizar app
+                </button>
+                <span id="network-status" class="network-status offline">Offline</span>
             </div>
             <div style="display:flex; align-items:center; gap:12px;">
                 <div id="user-display" class="user-display">

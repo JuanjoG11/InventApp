@@ -11,7 +11,9 @@ const AppState = {
     catalog: [],
     todayTasks: [],
     counts: [],
-    history: []
+    history: [],
+    pendingSync: { tasks: [], history: [] },
+    isOnline: true
 };
 
 const SUPABASE_URL = 'https://wfhyzlubzzkvnyztqjrt.supabase.co';
@@ -38,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function initApp() {
     initTheme();
+    initNetworkStatus();
     registerServiceWorker();
     setupInstallPrompt();
     await loadData();
@@ -132,6 +135,111 @@ function restoreLocalSession() {
     } catch (error) {
         console.warn('Error restaurando sesión local:', error);
         return false;
+    }
+}
+
+function initNetworkStatus() {
+    AppState.isOnline = navigator.onLine;
+    updateNetworkStatusUI();
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+}
+
+function updateNetworkStatusUI() {
+    const statusEl = document.getElementById('network-status');
+    if (!statusEl) return;
+    statusEl.textContent = AppState.isOnline ? 'Online' : 'Offline';
+    statusEl.className = `network-status ${AppState.isOnline ? 'online' : 'offline'}`;
+}
+
+function handleOnline() {
+    AppState.isOnline = true;
+    updateNetworkStatusUI();
+    showToast('Conexión restaurada. Sincronizando datos pendientes...', 'success');
+    if (USE_SUPABASE && supabaseClient) {
+        syncPendingData();
+        if (!taskSubscription) subscribeTaskAssignments();
+    }
+}
+
+function handleOffline() {
+    AppState.isOnline = false;
+    updateNetworkStatusUI();
+    showToast('Sin conexión. La app seguirá funcionando en modo offline.', 'warning');
+}
+
+async function syncPendingData() {
+    if (!USE_SUPABASE || !supabaseClient || !navigator.onLine) return;
+
+    if (AppState.pendingSync.tasks.length > 0) {
+        const remainingTasks = [];
+        for (const taskRecord of AppState.pendingSync.tasks) {
+            const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([taskRecord]);
+            if (error) {
+                console.warn('Error sincronizando tarea pendiente:', error);
+                remainingTasks.push(taskRecord);
+            }
+        }
+        AppState.pendingSync.tasks = remainingTasks;
+        saveData();
+        if (remainingTasks.length === 0) {
+            showToast('Tareas pendientes sincronizadas correctamente.', 'success');
+        }
+    }
+
+    if (AppState.pendingSync.history.length > 0) {
+        const remainingHistory = [];
+        for (const record of AppState.pendingSync.history) {
+            const { error } = await supabaseClient.from('inventory_history').insert([{
+                date: record.date,
+                product_name: record.name,
+                product_code: record.code,
+                provider: record.provider,
+                embalaje: record.embalaje,
+                expected_stock: record.expectedStock,
+                cajas: record.cajas,
+                unidades: record.unidades,
+                total_contado: record.totalContado,
+                diff_uds: record.diffUds,
+                diff_valor_raw: record.diffValorRaw,
+                descuadre_formateado: record.descuadreFormateado,
+                averias: record.averias
+            }] );
+            if (error) {
+                console.warn('Error sincronizando historial pendiente:', error);
+                remainingHistory.push(record);
+            }
+        }
+        AppState.pendingSync.history = remainingHistory;
+        saveData();
+        if (remainingHistory.length === 0) {
+            showToast('Historial pendiente sincronizado correctamente.', 'success');
+        }
+    }
+}
+
+function forceAppUpdate() {
+    showToast('Buscando actualización de la app...', 'info');
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistration().then(reg => {
+            if (!reg) {
+                window.location.reload();
+                return;
+            }
+            reg.update();
+            if (reg.waiting) {
+                reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }
+            if (reg.installing) {
+                reg.installing.addEventListener('statechange', event => {
+                    if (event.target.state === 'installed' && navigator.serviceWorker.controller) {
+                        window.location.reload();
+                    }
+                });
+            }
+        });
+    } else {
+        window.location.reload();
     }
 }
 
@@ -456,9 +564,26 @@ function refreshTasksState(newRow) {
 }
 
 async function pushTasksToSupabase() {
+    const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
+    const taskRecord = {
+        payload: taskPayload,
+        published_by: AppState.currentUserId,
+        published_by_email: AppState.currentUserEmail,
+        status: 'active'
+    };
+
     if (!supabaseClient) {
-        showToast('No hay conexión con Supabase. No fue posible publicar la tarea.', 'warning');
-        return false;
+        AppState.pendingSync.tasks.push(taskRecord);
+        saveData();
+        showToast('Guardado localmente. Se sincronizará cuando tengas internet.', 'success');
+        return true;
+    }
+
+    if (!navigator.onLine) {
+        AppState.pendingSync.tasks.push(taskRecord);
+        saveData();
+        showToast('Sin conexión. La tarea se guardó offline y se sincronizará automáticamente.', 'success');
+        return true;
     }
 
     if (USE_SUPABASE_AUTH) {
@@ -469,17 +594,13 @@ async function pushTasksToSupabase() {
         }
     }
 
-    const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
-    const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([{
-        payload: taskPayload,
-        published_by: AppState.currentUserId,
-        published_by_email: AppState.currentUserEmail,
-        status: 'active'
-    }]);
+    const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([taskRecord]);
     if (error) {
         console.warn('Supabase push tasks error', error);
-        showToast(error.message || 'No se pudo publicar la tarea en tiempo real. Verifica la conexión.', 'warning');
-        return false;
+        AppState.pendingSync.tasks.push(taskRecord);
+        saveData();
+        showToast('Error conectando a Supabase. Se guardó offline y se sincronizará después.', 'warning');
+        return true;
     }
 
     return true;
@@ -490,11 +611,13 @@ async function loadData() {
     const savedTasks = localStorage.getItem('ia_todayTasks');
     const savedCounts = localStorage.getItem('ia_counts');
     const savedHistory = localStorage.getItem('ia_history');
+    const savedSync = localStorage.getItem('ia_pendingSync');
 
     AppState.catalog = savedCatalog ? JSON.parse(savedCatalog) : initialCatalog;
     AppState.todayTasks = savedTasks ? JSON.parse(savedTasks) : [];
     AppState.counts = savedCounts ? JSON.parse(savedCounts) : [];
     AppState.history = savedHistory ? JSON.parse(savedHistory) : [];
+    AppState.pendingSync = savedSync ? JSON.parse(savedSync) : { tasks: [], history: [] };
 
     if (USE_SUPABASE) {
         initSupabase();
@@ -507,12 +630,12 @@ function saveData() {
     localStorage.setItem('ia_todayTasks', JSON.stringify(AppState.todayTasks));
     localStorage.setItem('ia_counts', JSON.stringify(AppState.counts));
     localStorage.setItem('ia_history', JSON.stringify(AppState.history));
+    localStorage.setItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
     
     if (AppState.currentRole === 'admin') updateAdminDashboard();
 }
 
 async function pushHistoryToSupabase(records) {
-    if (!supabaseClient) return;
     const payload = records.map(record => ({
         date: record.date,
         product_name: record.name,
@@ -528,10 +651,20 @@ async function pushHistoryToSupabase(records) {
         descuadre_formateado: record.descuadreFormateado,
         averias: record.averias
     }));
+
+    if (!supabaseClient || !navigator.onLine) {
+        AppState.pendingSync.history.push(...records.map(record => ({ ...record })));
+        saveData();
+        showToast('Historial guardado localmente. Se sincronizará cuando vuelvas online.', 'success');
+        return;
+    }
+
     const { error } = await supabaseClient.from('inventory_history').insert(payload);
     if (error) {
         console.warn('Supabase history insert error', error);
-        showToast('No se pudo sincronizar el historial con Supabase.', 'warning');
+        AppState.pendingSync.history.push(...records.map(record => ({ ...record })));
+        saveData();
+        showToast('No se pudo sincronizar el historial con Supabase. Se guardó localmente.', 'warning');
     }
 }
 
