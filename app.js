@@ -124,10 +124,53 @@ function restoreLocalSession() {
             subscribeTaskAssignments();
         }
 
+        if (AppState.currentRole === 'worker') {
+            requestNotificationPermission();
+        }
+
         return true;
     } catch (error) {
         console.warn('Error restaurando sesión local:', error);
         return false;
+    }
+}
+
+function supportsNotifications() {
+    return 'Notification' in window && 'serviceWorker' in navigator;
+}
+
+function requestNotificationPermission() {
+    if (!supportsNotifications()) return;
+    if (Notification.permission === 'granted') return;
+
+    Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+            showToast('Notificaciones activadas. Te avisaremos cuando llegue una nueva tarea.', 'success');
+        } else if (permission === 'denied') {
+            showToast('Notificaciones denegadas. Igual recibirás alertas en la app.', 'warning');
+        }
+    }).catch(err => {
+        console.warn('Error solicitando permisos de notificación:', err);
+    });
+}
+
+function notifyNewTaskAssignment(count = 1) {
+    const message = count === 1 ? 'Tienes 1 nueva tarea.' : `Tienes ${count} nuevas tareas.`;
+    showToast(message, 'success');
+
+    if (Notification.permission === 'granted') {
+        try {
+            new Notification('Nueva tarea asignada', {
+                body: message,
+                icon: './icon-192.png'
+            });
+        } catch (err) {
+            console.warn('Error mostrando notificación:', err);
+        }
+    }
+
+    if (navigator.vibrate) {
+        navigator.vibrate([200, 100, 200]);
     }
 }
 
@@ -241,6 +284,14 @@ function fallbackLocalLogin(email, password) {
     if (USE_SUPABASE && supabaseClient) {
         fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
         subscribeTaskAssignments();
+    }
+
+    if (user.role === 'worker') {
+        requestNotificationPermission();
+    }
+
+    if (user.role === 'worker') {
+        requestNotificationPermission();
     }
 
     showToast(`Bienvenido ${user.name}`, 'success');
@@ -382,14 +433,7 @@ function subscribeTaskAssignments() {
 
     const refreshTasks = payload => {
         const newRow = payload?.new;
-        if (!newRow || !Array.isArray(newRow.payload)) return;
-        AppState.todayTasks = newRow.payload.map(task => ({ ...task }));
-        saveData();
-        if (AppState.currentRole === 'worker') renderWorkerTasks();
-        updateAdminDashboard();
-        if (AppState.currentRole === 'worker') {
-            showToast('Nueva publicación de tareas disponible.', 'success');
-        }
+        refreshTasksState(newRow);
     };
 
     taskSubscription = supabaseClient.channel('public:task_assignments')
@@ -398,6 +442,17 @@ function subscribeTaskAssignments() {
         .subscribe(status => {
             console.log('Task subscription status:', status);
         });
+}
+
+function refreshTasksState(newRow) {
+    if (!newRow || !Array.isArray(newRow.payload)) return;
+    AppState.todayTasks = newRow.payload.map(task => ({ ...task }));
+    saveData();
+    if (AppState.currentRole === 'worker') renderWorkerTasks();
+    updateAdminDashboard();
+    if (AppState.currentRole === 'worker') {
+        notifyNewTaskAssignment(AppState.todayTasks.length);
+    }
 }
 
 async function pushTasksToSupabase() {
