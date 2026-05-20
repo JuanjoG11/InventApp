@@ -59,18 +59,18 @@ CREATE TABLE IF NOT EXISTS public.task_assignments (
 
 ALTER TABLE public.task_assignments ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "authenticated_select_task_assignments" ON public.task_assignments
+CREATE POLICY "public_select_task_assignments" ON public.task_assignments
   FOR SELECT
-  USING (auth.role() = 'authenticated');
+  USING (true);
 
-CREATE POLICY "authenticated_insert_task_assignments" ON public.task_assignments
+CREATE POLICY "public_insert_task_assignments" ON public.task_assignments
   FOR INSERT
-  WITH CHECK (auth.role() = 'authenticated');
+  WITH CHECK (true);
 
-CREATE POLICY "authenticated_update_task_assignments" ON public.task_assignments
+CREATE POLICY "public_update_task_assignments" ON public.task_assignments
   FOR UPDATE
-  USING (auth.role() = 'authenticated')
-  WITH CHECK (auth.role() = 'authenticated');
+  USING (true)
+  WITH CHECK (true);
 
 -- 6) Datos de ejemplo para products (puedes añadir más filas)
 INSERT INTO public.products (provider, name, code, embalaje, expected_stock, precio)
@@ -106,10 +106,10 @@ CREATE POLICY "public_select_products" ON public.products
   FOR SELECT
   USING (true);
 
--- Historial: permitir inserts por usuarios autenticados (requiere auth.uid)
-CREATE POLICY "auth_insert_history" ON public.inventory_history
+-- Historial: permitir inserts anónimos y públicos para el historial de conteos
+CREATE POLICY "public_insert_history" ON public.inventory_history
   FOR INSERT
-  WITH CHECK (auth.role() = 'authenticated');
+  WITH CHECK (true);
 
 -- Profiles: permitir select del propio perfil
 CREATE POLICY "select_own_profile" ON public.profiles

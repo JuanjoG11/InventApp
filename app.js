@@ -20,6 +20,7 @@ const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
+const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando login local y acceso anónimo para datos.
 
 // Catálogo base de prueba por si no cargan Excel
 const initialCatalog = [
@@ -99,7 +100,7 @@ window.logout = async function() {
 };
 
 async function initializeUserSession() {
-    if (!USE_SUPABASE || !supabaseClient) {
+    if (!USE_SUPABASE || !supabaseClient || !USE_SUPABASE_AUTH) {
         showLoginScreen();
         return;
     }
@@ -129,9 +130,9 @@ async function handleLogin(event) {
         return;
     }
 
-    if (!USE_SUPABASE || !supabaseClient) {
+    if (!USE_SUPABASE || !supabaseClient || !USE_SUPABASE_AUTH) {
         if (fallbackLocalLogin(email, password)) return;
-        showToast('No hay conexión a Supabase. Revisa tu configuración.', 'danger');
+        showToast('No hay conexión a Supabase o no usas auth. Revisa tu configuración.', 'danger');
         return;
     }
 
