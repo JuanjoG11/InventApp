@@ -21,8 +21,10 @@ const SUPABASE_ANON_KEY = 'sb_publishable_0pwlDVxz0DAEKHgGAsCB2Q_Ru6TNHKl';
 const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
+let supabaseAvailable = true;
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
 const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando login local y acceso anónimo para datos.
+// Si ves 401 / 42501 en task_assignments, ejecuta el SQL en supabase_task_assignments_policy.sql
 
 // Catálogo base de prueba por si no cargan Excel
 const initialCatalog = [
@@ -496,6 +498,7 @@ function initSupabase() {
             }
         }
     });
+    supabaseAvailable = true;
 }
 
 async function fetchSupabaseProducts() {
@@ -587,6 +590,13 @@ async function pushTasksToSupabase() {
         status: 'active'
     };
 
+    if (!supabaseAvailable) {
+        AppState.pendingSync.tasks.push(taskRecord);
+        saveData();
+        showToast('Supabase no está disponible. Guardado localmente.', 'warning');
+        return true;
+    }
+
     if (!supabaseClient) {
         AppState.pendingSync.tasks.push(taskRecord);
         saveData();
@@ -612,10 +622,12 @@ async function pushTasksToSupabase() {
     const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([taskRecord]);
     if (error) {
         console.warn('Supabase push tasks error', error);
-        if (error.status === 401) {
-            showToast('401 no autorizado en task_assignments. Verifica RLS y la clave anónima.', 'danger');
+        if (error.status === 401 || error.code === '42501') {
+            supabaseAvailable = false;
+            showToast('Sincronización denegada en Supabase. Revisa las políticas RLS de task_assignments.', 'danger');
             return false;
         }
+
         AppState.pendingSync.tasks.push(taskRecord);
         saveData();
         showToast('Error conectando a Supabase. Se guardó offline y se sincronizará después.', 'warning');
@@ -895,7 +907,7 @@ function renderAdminCatalog(providerFilter) {
             </td>
             <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
             <td class="action-cell">
-                ${isAssigned ? `<button class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
+                ${isAssigned ? `<button type="button" class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
             </td>
         `;
         tbody.appendChild(tr);
@@ -938,7 +950,7 @@ function deleteAssignedTask(itemId) {
     renderAdminCatalog('all');
     updateAdminDashboard();
 
-    if (USE_SUPABASE && supabaseClient) {
+    if (USE_SUPABASE && supabaseClient && supabaseAvailable) {
         pushTasksToSupabase().then(published => {
             if (published) {
                 showToast('Tarea eliminada y sincronizada al trabajador.', 'success');
@@ -946,6 +958,8 @@ function deleteAssignedTask(itemId) {
                 showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'warning');
             }
         });
+    } else if (USE_SUPABASE && supabaseClient && !supabaseAvailable) {
+        showToast('Tarea eliminada localmente. Supabase no está disponible por RLS/401.', 'warning');
     } else {
         showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'success');
     }
