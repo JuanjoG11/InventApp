@@ -184,6 +184,12 @@ function fallbackLocalLogin(email, password) {
     document.querySelector('.app-container').style.display = 'flex';
     switchRole(user.role);
     updateUserDisplay();
+
+    if (USE_SUPABASE && supabaseClient) {
+        fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+        subscribeTaskAssignments();
+    }
+
     showToast(`Bienvenido ${user.name}`, 'success');
     return true;
 }
@@ -341,12 +347,14 @@ function subscribeTaskAssignments() {
 }
 
 async function pushTasksToSupabase() {
-    if (!supabaseClient) return false;
+    if (!supabaseClient) return true;
 
-    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
-    if (sessionError || !sessionData?.session) {
-        showToast('Debes iniciar sesión en Supabase para publicar tareas.', 'danger');
-        return false;
+    if (USE_SUPABASE_AUTH) {
+        const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+        if (sessionError || !sessionData?.session) {
+            showToast('Debes iniciar sesión en Supabase para publicar tareas.', 'danger');
+            return false;
+        }
     }
 
     const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
