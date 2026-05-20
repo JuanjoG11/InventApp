@@ -535,6 +535,9 @@ async function fetchLatestTasks() {
         .limit(1);
     if (error) {
         console.warn('Supabase tasks fetch error', error);
+        if (error.status === 401) {
+            showToast('401 en task_assignments: revisa las políticas RLS de Supabase.', 'danger');
+        }
         return;
     }
     if (data?.length > 0) {
@@ -609,6 +612,10 @@ async function pushTasksToSupabase() {
     const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([taskRecord]);
     if (error) {
         console.warn('Supabase push tasks error', error);
+        if (error.status === 401) {
+            showToast('401 no autorizado en task_assignments. Verifica RLS y la clave anónima.', 'danger');
+            return false;
+        }
         AppState.pendingSync.tasks.push(taskRecord);
         saveData();
         showToast('Error conectando a Supabase. Se guardó offline y se sincronizará después.', 'warning');
@@ -918,6 +925,7 @@ function toggleTaskAssignment(itemId, element) {
     }
     saveData();
     updateAdminDashboard();
+    renderAdminCatalog('all');
 }
 
 function deleteAssignedTask(itemId) {
