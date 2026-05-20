@@ -45,6 +45,26 @@ self.addEventListener('fetch', event => {
     }
 
     if (requestUrl.origin === location.origin) {
+        const isAppShell = requestUrl.pathname.endsWith('/app.js')
+            || requestUrl.pathname.endsWith('/index.html')
+            || requestUrl.pathname.endsWith('/styles.css')
+            || requestUrl.pathname.endsWith('/manifest.json');
+
+        if (isAppShell) {
+            event.respondWith(
+                fetch(event.request)
+                    .then(networkResponse => {
+                        if (networkResponse && networkResponse.status === 200) {
+                            const cacheResponse = networkResponse.clone();
+                            caches.open(CACHE_NAME).then(cache => cache.put(event.request, cacheResponse));
+                        }
+                        return networkResponse;
+                    })
+                    .catch(() => caches.match(event.request))
+            );
+            return;
+        }
+
         event.respondWith(
             caches.match(event.request).then(cacheResponse => {
                 const fetchPromise = fetch(event.request)
