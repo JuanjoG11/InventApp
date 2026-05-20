@@ -484,7 +484,18 @@ function initSupabase() {
         showToast('No se cargó la librería Supabase. Asegúrate de tener conexión a internet.', 'danger');
         return;
     }
-    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+            persistSession: false,
+            detectSessionInUrl: false,
+            autoRefreshToken: false
+        },
+        global: {
+            headers: {
+                apikey: SUPABASE_ANON_KEY
+            }
+        }
+    });
 }
 
 async function fetchSupabaseProducts() {
@@ -876,8 +887,8 @@ function renderAdminCatalog(providerFilter) {
                 <span class="product-code-tag">${item.code}</span>
             </td>
             <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
-            <td>
-                ${isAssigned ? `<button class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : ''}
+            <td class="action-cell">
+                ${isAssigned ? `<button class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
             </td>
         `;
         tbody.appendChild(tr);
