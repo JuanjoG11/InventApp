@@ -932,6 +932,33 @@ function deleteAssignedTask(itemId) {
     }
 }
 
+async function deleteSelectedTasks() {
+    if (AppState.todayTasks.length === 0) {
+        showToast('No hay tareas asignadas para eliminar.', 'danger');
+        return;
+    }
+
+    if (!confirm('¿Eliminar todas las tareas asignadas para hoy?')) return;
+
+    AppState.todayTasks = [];
+    AppState.counts = [];
+    saveData();
+    renderAdminCatalog('all');
+    updateAdminDashboard();
+
+    if (USE_SUPABASE && supabaseClient) {
+        const published = await pushTasksToSupabase();
+        if (published) {
+            showToast('Tareas eliminadas y sincronizadas al trabajador.', 'success');
+        } else {
+            showToast('Tareas eliminadas localmente. Se sincronizará cuando haya conexión.', 'warning');
+        }
+        return;
+    }
+
+    showToast('Tareas eliminadas localmente. Se sincronizará cuando haya conexión.', 'success');
+}
+
 async function publishDailyTask() {
     if (AppState.todayTasks.length === 0) {
         showToast('Debes seleccionar productos para publicar.', 'danger');
