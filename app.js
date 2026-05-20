@@ -630,7 +630,7 @@ async function publishDailyTask() {
     AppState.counts = [];
     saveData();
 
-    if (USE_SUPABASE && supabaseClient) {
+    if (USE_SUPABASE && supabaseClient && USE_SUPABASE_AUTH) {
         const published = await pushTasksToSupabase();
         if (!published) return;
     }
