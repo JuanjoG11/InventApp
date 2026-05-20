@@ -59,27 +59,27 @@ CREATE TABLE IF NOT EXISTS public.task_assignments (
 
 ALTER TABLE public.task_assignments ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "public_select_task_assignments" ON public.task_assignments
+CREATE POLICY IF NOT EXISTS "public_select_task_assignments" ON public.task_assignments
   FOR SELECT
   USING (true);
 
-CREATE POLICY "anon_insert_task_assignments" ON public.task_assignments
+CREATE POLICY IF NOT EXISTS "anon_insert_task_assignments" ON public.task_assignments
   FOR INSERT
   TO anon
   WITH CHECK (true);
 
-CREATE POLICY "authenticated_insert_task_assignments" ON public.task_assignments
+CREATE POLICY IF NOT EXISTS "authenticated_insert_task_assignments" ON public.task_assignments
   FOR INSERT
   TO authenticated
   WITH CHECK (true);
 
-CREATE POLICY "anon_update_task_assignments" ON public.task_assignments
+CREATE POLICY IF NOT EXISTS "anon_update_task_assignments" ON public.task_assignments
   FOR UPDATE
   TO anon
   USING (true)
   WITH CHECK (true);
 
-CREATE POLICY "authenticated_update_task_assignments" ON public.task_assignments
+CREATE POLICY IF NOT EXISTS "authenticated_update_task_assignments" ON public.task_assignments
   FOR UPDATE
   TO authenticated
   USING (true)
