@@ -876,6 +876,9 @@ function renderAdminCatalog(providerFilter) {
                 <span class="product-code-tag">${item.code}</span>
             </td>
             <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
+            <td>
+                ${isAssigned ? `<button class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : ''}
+            </td>
         `;
         tbody.appendChild(tr);
     });
@@ -902,7 +905,31 @@ function toggleTaskAssignment(itemId, element) {
         AppState.todayTasks.push({...item}); 
         element.classList.add('checked');
     }
+    saveData();
     updateAdminDashboard();
+}
+
+function deleteAssignedTask(itemId) {
+    const idx = AppState.todayTasks.findIndex(t => t.id === itemId);
+    if (idx === -1) return;
+
+    AppState.todayTasks.splice(idx, 1);
+    AppState.counts = AppState.counts.filter(c => c.item.id !== itemId);
+    saveData();
+    renderAdminCatalog('all');
+    updateAdminDashboard();
+
+    if (USE_SUPABASE && supabaseClient) {
+        pushTasksToSupabase().then(published => {
+            if (published) {
+                showToast('Tarea eliminada y sincronizada al trabajador.', 'success');
+            } else {
+                showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'warning');
+            }
+        });
+    } else {
+        showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'success');
+    }
 }
 
 async function publishDailyTask() {
