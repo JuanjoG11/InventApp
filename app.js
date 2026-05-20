@@ -144,7 +144,7 @@ async function handleLogin(event) {
         if (error) {
             console.warn('Supabase login error', error);
             if (fallbackLocalLogin(email, password)) return;
-            showToast('Correo o contraseña incorrectos. Intenta de nuevo.', 'danger');
+            showToast(error.message || 'Correo o contraseña incorrectos. Intenta de nuevo.', 'danger');
             return;
         }
 
@@ -340,7 +340,14 @@ function subscribeTaskAssignments() {
 }
 
 async function pushTasksToSupabase() {
-    if (!supabaseClient) return;
+    if (!supabaseClient) return false;
+
+    const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+    if (sessionError || !sessionData?.session) {
+        showToast('Debes iniciar sesión en Supabase para publicar tareas.', 'danger');
+        return false;
+    }
+
     const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
     const { error } = await supabaseClient.from(SUPABASE_TASKS_TABLE).insert([{
         payload: taskPayload,
@@ -350,8 +357,11 @@ async function pushTasksToSupabase() {
     }]);
     if (error) {
         console.warn('Supabase push tasks error', error);
-        showToast('No se pudo publicar la tarea en tiempo real. Verifica la conexión.', 'warning');
+        showToast(error.message || 'No se pudo publicar la tarea en tiempo real. Verifica la conexión.', 'warning');
+        return false;
     }
+
+    return true;
 }
 
 async function loadData() {
@@ -368,8 +378,6 @@ async function loadData() {
     if (USE_SUPABASE) {
         initSupabase();
         await fetchSupabaseProducts();
-        await fetchLatestTasks();
-        subscribeTaskAssignments();
     }
 }
 
@@ -620,9 +628,12 @@ async function publishDailyTask() {
     }
     AppState.counts = [];
     saveData();
+
     if (USE_SUPABASE && supabaseClient) {
-        await pushTasksToSupabase();
+        const published = await pushTasksToSupabase();
+        if (!published) return;
     }
+
     showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
 }
 
