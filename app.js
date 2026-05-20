@@ -84,11 +84,59 @@ function showLoginScreen() {
     if (passwordInput) passwordInput.value = '';
 }
 
+function saveLocalSession() {
+    const sessionData = {
+        loggedIn: AppState.loggedIn,
+        currentRole: AppState.currentRole,
+        currentUserId: AppState.currentUserId,
+        currentUserName: AppState.currentUserName,
+        currentUserEmail: AppState.currentUserEmail
+    };
+    localStorage.setItem('ia_session', JSON.stringify(sessionData));
+}
+
+function clearLocalSession() {
+    localStorage.removeItem('ia_session');
+}
+
+function restoreLocalSession() {
+    const sessionString = localStorage.getItem('ia_session');
+    if (!sessionString) return false;
+
+    try {
+        const sessionData = JSON.parse(sessionString);
+        if (!sessionData.loggedIn || !sessionData.currentRole) return false;
+
+        AppState.loggedIn = true;
+        AppState.currentRole = sessionData.currentRole;
+        AppState.currentUserId = sessionData.currentUserId || null;
+        AppState.currentUserName = sessionData.currentUserName || sessionData.currentUserEmail || (sessionData.currentRole === 'admin' ? 'Administrador' : 'Trabajador');
+        AppState.currentUserEmail = sessionData.currentUserEmail || '';
+
+        updateRoleSwitcherVisibility(AppState.currentRole);
+        document.getElementById('login-screen').style.display = 'none';
+        document.querySelector('.app-container').style.display = 'flex';
+        switchRole(AppState.currentRole);
+        updateUserDisplay();
+
+        if (USE_SUPABASE && supabaseClient) {
+            fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+            subscribeTaskAssignments();
+        }
+
+        return true;
+    } catch (error) {
+        console.warn('Error restaurando sesión local:', error);
+        return false;
+    }
+}
+
 window.logout = async function() {
     if (USE_SUPABASE && supabaseClient) {
         const { error } = await supabaseClient.auth.signOut();
         if (error) console.warn('Error cerrando sesión en Supabase:', error);
     }
+    clearLocalSession();
     AppState.loggedIn = false;
     AppState.currentRole = null;
     AppState.currentUserId = null;
@@ -101,6 +149,7 @@ window.logout = async function() {
 
 async function initializeUserSession() {
     if (!USE_SUPABASE || !supabaseClient || !USE_SUPABASE_AUTH) {
+        if (restoreLocalSession()) return;
         showLoginScreen();
         return;
     }
@@ -108,6 +157,7 @@ async function initializeUserSession() {
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) {
         console.warn('Supabase session error', error);
+        if (restoreLocalSession()) return;
         showLoginScreen();
         return;
     }
@@ -115,6 +165,8 @@ async function initializeUserSession() {
     const user = data?.session?.user;
     if (user) {
         await signInUser(user);
+    } else if (restoreLocalSession()) {
+        return;
     } else {
         showLoginScreen();
     }
@@ -184,6 +236,7 @@ function fallbackLocalLogin(email, password) {
     document.querySelector('.app-container').style.display = 'flex';
     switchRole(user.role);
     updateUserDisplay();
+    saveLocalSession();
 
     if (USE_SUPABASE && supabaseClient) {
         fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
@@ -207,6 +260,7 @@ async function signInUser(user) {
     AppState.currentUserName = user?.user_metadata?.full_name || user?.email || (role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = user?.email || '';
     updateUserDisplay();
+    saveLocalSession();
     await fetchLatestTasks();
     subscribeTaskAssignments();
     showToast(`Bienvenido ${AppState.currentUserName}`, 'success');
