@@ -347,7 +347,10 @@ function subscribeTaskAssignments() {
 }
 
 async function pushTasksToSupabase() {
-    if (!supabaseClient) return true;
+    if (!supabaseClient) {
+        showToast('No hay conexión con Supabase. No fue posible publicar la tarea.', 'warning');
+        return false;
+    }
 
     if (USE_SUPABASE_AUTH) {
         const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
@@ -425,12 +428,23 @@ async function pushHistoryToSupabase(records) {
 
 function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('./sw.js')
+        navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
             .then(reg => {
                 console.log('Service Worker registrado:', reg.scope);
                 if (reg.waiting) {
                     reg.waiting.postMessage({ type: 'SKIP_WAITING' });
                 }
+                return navigator.serviceWorker.getRegistrations();
+            })
+            .then(registrations => {
+                registrations.forEach(reg => {
+                    if (reg.waiting) {
+                        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+                    }
+                    if (reg.active && reg.active.scriptURL.includes('sw.js')) {
+                        reg.update();
+                    }
+                });
             })
             .catch(err => {
                 console.warn('No se pudo registrar el Service Worker:', err);
@@ -638,7 +652,7 @@ async function publishDailyTask() {
     AppState.counts = [];
     saveData();
 
-    if (USE_SUPABASE && supabaseClient && USE_SUPABASE_AUTH) {
+    if (USE_SUPABASE && supabaseClient) {
         const published = await pushTasksToSupabase();
         if (!published) return;
     }
