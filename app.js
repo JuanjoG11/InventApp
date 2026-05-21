@@ -530,6 +530,31 @@ async function fetchSupabaseProducts() {
     }
 }
 
+async function fetchWorkerCounts() {
+    if (!supabaseClient || AppState.currentRole !== 'admin') return;
+    
+    const { data, error } = await supabaseClient
+        .from('worker_counts')
+        .select('*');
+    
+    if (error) {
+        console.warn('Error fetching worker counts:', error);
+        return;
+    }
+    
+    if (data && data.length > 0) {
+        // Convertir registros de worker_counts en AppState.counts
+        AppState.counts = data.map(record => ({
+            item: record.item || { id: record.task_id },
+            cajas: record.cajas,
+            unidades: record.unidades,
+            averias: record.averias
+        }));
+        saveData();
+        updateAdminDashboard();
+    }
+}
+
 async function fetchLatestTasks() {
     if (!supabaseClient) return;
     const { data, error } = await supabaseClient
@@ -546,16 +571,16 @@ async function fetchLatestTasks() {
     }
     if (data?.length > 0) {
         const latest = data[0];
-        if (latest.status === 'counts' && latest.payload?.counts) {
-            // Cargar conteos si están disponibles
-            AppState.counts = latest.payload.counts;
-            saveData();
-        } else if (Array.isArray(latest.payload)) {
+        if (Array.isArray(latest.payload)) {
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
             saveData();
             if (AppState.currentRole === 'worker') renderWorkerTasks();
-            updateAdminDashboard();
         }
+    }
+    
+    // Cargar conteos del worker en tiempo real
+    if (AppState.currentRole === 'admin') {
+        await fetchWorkerCounts();
     }
 }
 
@@ -564,19 +589,12 @@ function subscribeTaskAssignments() {
 
     const refreshTasks = payload => {
         const newRow = payload?.new;
-        if (newRow?.status === 'counts') {
-            // Sincronizar conteos del worker
-            if (newRow.payload?.counts && Array.isArray(newRow.payload.counts)) {
-                AppState.counts = newRow.payload.counts;
-                saveData();
-                if (AppState.currentRole === 'admin') {
-                    updateAdminDashboard();
-                }
-            }
-        } else {
-            // Sincronizar tareas
-            refreshTasksState(newRow);
-        }
+        refreshTasksState(newRow);
+    };
+    
+    const refreshCounts = payload => {
+        // Cargar todos los conteos desde worker_counts
+        fetchWorkerCounts();
     };
 
     taskSubscription = supabaseClient.channel('public:task_assignments')
@@ -585,6 +603,14 @@ function subscribeTaskAssignments() {
         .subscribe(status => {
             console.log('Task subscription status:', status);
         });
+    
+    // Suscribirse también a cambios en worker_counts
+    if (AppState.currentRole === 'admin') {
+        supabaseClient.channel('public:worker_counts')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
+            .subscribe();
+    }
 }
 
 function refreshTasksState(newRow) {
@@ -601,23 +627,20 @@ function refreshTasksState(newRow) {
 async function syncCountsToSupabase() {
     if (!supabaseClient || !navigator.onLine) return;
     
-    const countsPayload = {
-        counts: AppState.counts,
-        updated_at: new Date().toISOString(),
-        updated_by: AppState.currentUserEmail
-    };
-    
-    const { error } = await supabaseClient
-        .from('task_assignments')
-        .upsert([{
-            id: 'counts-' + AppState.currentUserEmail,
-            status: 'counts',
-            payload: countsPayload,
-            published_by_email: AppState.currentUserEmail
-        }], { onConflict: 'id' });
-    
-    if (error) {
-        console.warn('Error sincronizando conteos:', error);
+    // Sincronizar cada conteo como un registro individual en worker_counts
+    for (const count of AppState.counts) {
+        const { error } = await supabaseClient.from('worker_counts').upsert([{
+            task_id: count.item.id,
+            worker_email: AppState.currentUserEmail,
+            cajas: count.cajas,
+            unidades: count.unidades,
+            averias: count.averias,
+            item: count.item
+        }], { onConflict: 'task_id,worker_email' });
+        
+        if (error) {
+            console.warn('Error sincronizando conteo para', count.item.id, ':', error);
+        }
     }
 }
 

@@ -35,7 +35,40 @@ CREATE POLICY "anonymous_update_task_assignments" ON public.task_assignments
   USING (true)
   WITH CHECK (true);
 
--- 3) Tabla de historial de inventario
+-- 3) Tabla de conteos en tiempo real del worker
+CREATE TABLE IF NOT EXISTS public.worker_counts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id text NOT NULL,
+  worker_email text NOT NULL,
+  cajas integer DEFAULT 0,
+  unidades integer DEFAULT 0,
+  averias integer DEFAULT 0,
+  item jsonb,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE public.worker_counts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "public_select_worker_counts" ON public.worker_counts;
+CREATE POLICY "public_select_worker_counts" ON public.worker_counts
+  FOR SELECT
+  USING (true);
+
+DROP POLICY IF EXISTS "anon_insert_worker_counts" ON public.worker_counts;
+CREATE POLICY "anon_insert_worker_counts" ON public.worker_counts
+  FOR INSERT
+  TO anon
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_update_worker_counts" ON public.worker_counts;
+CREATE POLICY "anon_update_worker_counts" ON public.worker_counts
+  FOR UPDATE
+  TO anon
+  USING (true)
+  WITH CHECK (true);
+
+-- 4) Tabla de historial de inventario
 CREATE TABLE IF NOT EXISTS public.inventory_history (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   date date NOT NULL,
@@ -65,7 +98,7 @@ CREATE POLICY "public_insert_history" ON public.inventory_history
 
 -- Nota:
 --  * Si el admin sube todo desde Excel y no usas auth, no necesitas nada más.
---  * Crea solo task_assignments e inventory_history en Supabase.
+--  * Las tablas task_assignments, worker_counts e inventory_history son suficientes.
 --  * Mantén USE_SUPABASE_AUTH = false en app.js.
 --  * Usa HTTPS y el URL/anon key correctos de Supabase.
 
