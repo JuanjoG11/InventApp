@@ -128,6 +128,12 @@ function restoreLocalSession() {
 
         if (USE_SUPABASE && supabaseClient) {
             fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+            
+            // Si es worker, cargar sus conteos desde Supabase
+            if (AppState.currentRole === 'worker') {
+                fetchWorkerCountsForCurrentUser().catch(err => console.warn('fetchWorkerCountsForCurrentUser error', err));
+            }
+            
             subscribeTaskAssignments();
         }
 
@@ -395,6 +401,12 @@ function fallbackLocalLogin(email, password) {
 
     if (USE_SUPABASE && supabaseClient) {
         fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+        
+        // Si es worker, cargar sus conteos desde Supabase
+        if (user.role === 'worker') {
+            fetchWorkerCountsForCurrentUser().catch(err => console.warn('fetchWorkerCountsForCurrentUser error', err));
+        }
+        
         subscribeTaskAssignments();
     }
 
@@ -425,6 +437,12 @@ async function signInUser(user) {
     updateUserDisplay();
     saveLocalSession();
     await fetchLatestTasks();
+    
+    // Si es worker, cargar sus conteos desde Supabase
+    if (role === 'worker') {
+        await fetchWorkerCountsForCurrentUser();
+    }
+    
     subscribeTaskAssignments();
     showToast(`Bienvenido ${AppState.currentUserName}`, 'success');
 }
@@ -555,6 +573,32 @@ async function fetchWorkerCounts() {
     }
 }
 
+async function fetchWorkerCountsForCurrentUser() {
+    if (!supabaseClient || AppState.currentRole !== 'worker') return;
+    
+    const { data, error } = await supabaseClient
+        .from('worker_counts')
+        .select('*')
+        .eq('worker_email', AppState.currentUserEmail);
+    
+    if (error) {
+        console.warn('Error fetching worker counts for current user:', error);
+        return;
+    }
+    
+    if (data && data.length > 0) {
+        // Convertir registros de worker_counts en AppState.counts
+        AppState.counts = data.map(record => ({
+            item: record.item || { id: record.task_id },
+            cajas: record.cajas,
+            unidades: record.unidades,
+            averias: record.averias
+        }));
+        saveData();
+        renderWorkerTasks();
+    }
+}
+
 async function fetchLatestTasks() {
     if (!supabaseClient) return;
     const { data, error } = await supabaseClient
@@ -594,7 +638,12 @@ function subscribeTaskAssignments() {
     
     const refreshCounts = payload => {
         // Cargar todos los conteos desde worker_counts
-        fetchWorkerCounts();
+        if (AppState.currentRole === 'admin') {
+            fetchWorkerCounts();
+        } else if (AppState.currentRole === 'worker') {
+            // Worker carga solo sus conteos
+            fetchWorkerCountsForCurrentUser();
+        }
     };
 
     taskSubscription = supabaseClient.channel('public:task_assignments')
@@ -604,13 +653,11 @@ function subscribeTaskAssignments() {
             console.log('Task subscription status:', status);
         });
     
-    // Suscribirse también a cambios en worker_counts
-    if (AppState.currentRole === 'admin') {
-        supabaseClient.channel('public:worker_counts')
-            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
-            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
-            .subscribe();
-    }
+    // Suscribirse a cambios en worker_counts para admin y worker
+    supabaseClient.channel('public:worker_counts')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
+        .subscribe();
 }
 
 function refreshTasksState(newRow) {
