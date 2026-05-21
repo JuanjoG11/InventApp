@@ -970,6 +970,7 @@ function handleExcelUpload(event) {
         
         const selectedProvider = document.getElementById('excel-provider-select').value;
         let newItems = [];
+        let itemsMap = {};
         rawJson.forEach((row, index) => {
             const keys = Object.keys(row);
             let codigo = '';
@@ -988,17 +989,31 @@ function handleExcelUpload(event) {
             });
 
             if (codigo && nombre) {
-                newItems.push({
-                    id: 'ext-' + Date.now() + '-' + index,
-                    code: String(codigo),
-                    name: String(nombre),
-                    embalaje: parseInt(embalaje) || 1,
-                    expectedStock: parseInt(cantidad) || 0,
-                    precio: parseFloat(String(precio).replace(',', '.')) || 0,
-                    provider: selectedProvider
-                });
+                const codeStr = String(codigo).trim();
+                const stockVal = parseInt(cantidad) || 0;
+                const priceVal = parseFloat(String(precio).replace(',', '.')) || 0;
+                const embVal = parseInt(embalaje) || 1;
+
+                if (itemsMap[codeStr]) {
+                    itemsMap[codeStr].expectedStock += stockVal;
+                    if (String(nombre).length > itemsMap[codeStr].name.length) {
+                        itemsMap[codeStr].name = String(nombre);
+                    }
+                } else {
+                    itemsMap[codeStr] = {
+                        id: 'ext-' + Date.now() + '-' + index,
+                        code: codeStr,
+                        name: String(nombre),
+                        embalaje: embVal,
+                        expectedStock: stockVal,
+                        precio: priceVal,
+                        provider: selectedProvider
+                    };
+                }
             }
         });
+
+        newItems = Object.values(itemsMap);
 
         if (newItems.length > 0) {
             // Al subir un excel, reemplazamos las tareas de hoy por lo subido
@@ -1007,7 +1022,7 @@ function handleExcelUpload(event) {
             AppState.counts = []; // Reiniciamos los conteos si hay carga masiva nueva
             saveData();
             renderAdminCatalog('all');
-            showToast(`¡Excel cargado! Se han asignado ${newItems.length} productos para contar hoy.`, 'success');
+            showToast(`¡Excel cargado! Se han consolidado y asignado ${newItems.length} productos únicos para contar hoy.`, 'success');
         } else {
             showToast('No se encontraron columnas de "Código" y "Nombre" en el archivo.', 'danger');
         }
@@ -1115,6 +1130,11 @@ async function deleteSelectedTasks() {
 
     if (USE_SUPABASE && supabaseClient) {
         const published = await pushTasksToSupabase();
+        try {
+            await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        } catch (e) {
+            console.warn('Error al borrar conteos activos en Supabase:', e);
+        }
         if (published) {
             showToast('Tareas eliminadas y sincronizadas al trabajador.', 'success');
         } else {
@@ -1137,6 +1157,11 @@ async function publishDailyTask() {
     if (USE_SUPABASE && supabaseClient) {
         const published = await pushTasksToSupabase();
         if (!published) return;
+        try {
+            await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        } catch (e) {
+            console.warn('Error al borrar conteos activos en Supabase al publicar:', e);
+        }
     }
 
     showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
@@ -1376,9 +1401,22 @@ window.finishDay = async function() {
     AppState.counts = [];
     AppState.todayTasks = [];
     saveData();
+
+    if (USE_SUPABASE && supabaseClient) {
+        try {
+            // Sincronizar la lista de tareas vacía para limpiar en los trabajadores
+            await pushTasksToSupabase();
+            
+            // Borrar todos los conteos activos en Supabase
+            await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        } catch (e) {
+            console.warn('Error al limpiar datos del día en Supabase:', e);
+        }
+    }
+
     renderAdminHistory();
     updateAdminDashboard();
-    showToast('Día finalizado. PDF generado y descargado.', 'success');
+    showToast('Día finalizado. PDF generado, descargado y base de datos limpia.', 'success');
 }
 
 function getJsPDFCtor() {

@@ -38,3 +38,16 @@ CREATE POLICY IF NOT EXISTS "authenticated_update_task_assignments" ON public.ta
   TO authenticated
   USING (true)
   WITH CHECK (true);
+
+-- Permitir eliminaciones desde el cliente anónimo
+CREATE POLICY IF NOT EXISTS "anon_delete_task_assignments" ON public.task_assignments
+  FOR DELETE
+  TO anon
+  USING (true);
+
+-- Permitir eliminaciones para usuarios autenticados
+CREATE POLICY IF NOT EXISTS "authenticated_delete_task_assignments" ON public.task_assignments
+  FOR DELETE
+  TO authenticated
+  USING (true);
+

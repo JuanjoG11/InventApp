@@ -97,6 +97,19 @@ CREATE POLICY "public_insert_history" ON public.inventory_history
   TO anon
   WITH CHECK (true);
 
+-- 5) Políticas de eliminación para limpiar datos activos
+DROP POLICY IF EXISTS "anon_delete_task_assignments" ON public.task_assignments;
+CREATE POLICY "anon_delete_task_assignments" ON public.task_assignments
+  FOR DELETE
+  TO anon
+  USING (true);
+
+DROP POLICY IF EXISTS "anon_delete_worker_counts" ON public.worker_counts;
+CREATE POLICY "anon_delete_worker_counts" ON public.worker_counts
+  FOR DELETE
+  TO anon
+  USING (true);
+
 -- Nota:
 --  * Si el admin sube todo desde Excel y no usas auth, no necesitas nada más.
 --  * Las tablas task_assignments, worker_counts e inventory_history son suficientes.
