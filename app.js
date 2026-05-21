@@ -24,6 +24,7 @@ let taskSubscription = null;
 let supabaseAvailable = true;
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
 const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando login local y acceso anónimo para datos.
+const USE_SUPABASE_PRODUCTS = false; // Si el admin sube todo con Excel, no necesitamos tabla products.
 // Si ves 401 / 42501 en task_assignments, ejecuta el SQL en supabase_task_assignments_policy.sql
 
 // Catálogo base de prueba por si no cargan Excel
@@ -652,7 +653,9 @@ async function loadData() {
 
     if (USE_SUPABASE) {
         initSupabase();
-        await fetchSupabaseProducts();
+        if (USE_SUPABASE_PRODUCTS) {
+            await fetchSupabaseProducts();
+        }
     }
 }
 
@@ -915,9 +918,10 @@ function renderAdminCatalog(providerFilter) {
     lucide.createIcons();
 }
 
-function filterCatalogByProvider(provider) {
+function filterCatalogByProvider(provider, event) {
     document.querySelectorAll('.provider-filter-pill').forEach(btn => btn.classList.remove('active'));
-    event.currentTarget.classList.add('active');
+    const button = event?.currentTarget || document.querySelector(`.provider-filter-pill[data-provider="${provider}"]`);
+    if (button) button.classList.add('active');
     renderAdminCatalog(provider);
 }
 

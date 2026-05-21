@@ -181,12 +181,12 @@
                         </div>
 
                         <div class="provider-filters">
-                            <button class="provider-filter-pill active" onclick="filterCatalogByProvider('all')">Todos</button>
-                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('alpina')"><span class="dot alpina"></span>Alpina</button>
-                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('zenu')"><span class="dot zenu"></span>Zenú</button>
-                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('fleischmann')"><span class="dot fleischmann"></span>Fleischmann</button>
-                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('unilever')"><span class="dot unilever"></span>Unilever</button>
-                            <button class="provider-filter-pill" onclick="filterCatalogByProvider('familia')"><span class="dot familia"></span>Familia</button>
+                            <button class="provider-filter-pill active" data-provider="all" onclick="filterCatalogByProvider('all', event)">Todos</button>
+                            <button class="provider-filter-pill" data-provider="alpina" onclick="filterCatalogByProvider('alpina', event)"><span class="dot alpina"></span>Alpina</button>
+                            <button class="provider-filter-pill" data-provider="zenu" onclick="filterCatalogByProvider('zenu', event)"><span class="dot zenu"></span>Zenú</button>
+                            <button class="provider-filter-pill" data-provider="fleischmann" onclick="filterCatalogByProvider('fleischmann', event)"><span class="dot fleischmann"></span>Fleischmann</button>
+                            <button class="provider-filter-pill" data-provider="unilever" onclick="filterCatalogByProvider('unilever', event)"><span class="dot unilever"></span>Unilever</button>
+                            <button class="provider-filter-pill" data-provider="familia" onclick="filterCatalogByProvider('familia', event)"><span class="dot familia"></span>Familia</button>
                         </div>
 
                         <div class="search-box-container">

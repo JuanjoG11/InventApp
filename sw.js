@@ -8,9 +8,7 @@ const urlsToCache = [
     './icon-192.png',
     './icon-512.png',
     './jspdf.umd.min.js',
-    './jspdf.plugin.autotable.min.js',
-    'https://unpkg.com/lucide@latest',
-    'https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap'
+    './jspdf.plugin.autotable.min.js'
 ];
 
 self.addEventListener('install', event => {
