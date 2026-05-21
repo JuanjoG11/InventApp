@@ -17,7 +17,7 @@ const AppState = {
 };
 
 const SUPABASE_URL = 'https://wfhyzlubzzkvnyztqjrt.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_0pwlDVxz0DAEKHgGAsCB2Q_Ru6TNHKl';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndmaHl6bHVienprdm55enRxanJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODc3NjAsImV4cCI6MjA5NDg2Mzc2MH0.znfgvmksGzAAGxPHMU6ePcevqI_XK4H9wTdM6qd9E98';
 const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
@@ -106,7 +106,7 @@ function clearLocalSession() {
     localStorage.removeItem('ia_session');
 }
 
-function restoreLocalSession() {
+async function restoreLocalSession() {
     const sessionString = localStorage.getItem('ia_session');
     if (!sessionString) return false;
 
@@ -127,11 +127,12 @@ function restoreLocalSession() {
         updateUserDisplay();
 
         if (USE_SUPABASE && supabaseClient) {
-            fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+            // Cargar tareas primero
+            await fetchLatestTasks();
             
-            // Si es worker, cargar sus conteos desde Supabase
+            // Luego, si es worker, cargar sus conteos
             if (AppState.currentRole === 'worker') {
-                fetchWorkerCountsForCurrentUser().catch(err => console.warn('fetchWorkerCountsForCurrentUser error', err));
+                await fetchWorkerCountsForCurrentUser();
             }
             
             subscribeTaskAssignments();
@@ -226,6 +227,14 @@ async function syncPendingData() {
             showToast('Historial pendiente sincronizado correctamente.', 'success');
         }
     }
+
+    // Sincronizar conteos del trabajador si hay pendientes
+    if (AppState.currentRole === 'worker' && AppState.counts.length > 0) {
+        const success = await syncCountsToSupabase();
+        if (success) {
+            showToast('Conteos locales sincronizados correctamente con el servidor.', 'success');
+        }
+    }
 }
 
 function forceAppUpdate() {
@@ -310,7 +319,7 @@ window.logout = async function() {
 
 async function initializeUserSession() {
     if (!USE_SUPABASE || !supabaseClient || !USE_SUPABASE_AUTH) {
-        if (restoreLocalSession()) return;
+        if (await restoreLocalSession()) return;
         showLoginScreen();
         return;
     }
@@ -318,7 +327,7 @@ async function initializeUserSession() {
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) {
         console.warn('Supabase session error', error);
-        if (restoreLocalSession()) return;
+        if (await restoreLocalSession()) return;
         showLoginScreen();
         return;
     }
@@ -326,7 +335,7 @@ async function initializeUserSession() {
     const user = data?.session?.user;
     if (user) {
         await signInUser(user);
-    } else if (restoreLocalSession()) {
+    } else if (await restoreLocalSession()) {
         return;
     } else {
         showLoginScreen();
@@ -344,7 +353,7 @@ async function handleLogin(event) {
     }
 
     if (!USE_SUPABASE || !supabaseClient || !USE_SUPABASE_AUTH) {
-        if (fallbackLocalLogin(email, password)) return;
+        if (await fallbackLocalLogin(email, password)) return;
         showToast('No hay conexión a Supabase o no usas auth. Revisa tu configuración.', 'danger');
         return;
     }
@@ -357,7 +366,7 @@ async function handleLogin(event) {
 
         if (error) {
             console.warn('Supabase login error', error);
-            if (fallbackLocalLogin(email, password)) return;
+            if (await fallbackLocalLogin(email, password)) return;
             showToast(error.message || 'Correo o contraseña incorrectos. Intenta de nuevo.', 'danger');
             return;
         }
@@ -371,12 +380,12 @@ async function handleLogin(event) {
         await signInUser(user);
     } catch (err) {
         console.error('Error en el login de Supabase:', err);
-        if (fallbackLocalLogin(email, password)) return;
+        if (await fallbackLocalLogin(email, password)) return;
         showToast('Error de conexión. Intenta nuevamente.', 'danger');
     }
 }
 
-function fallbackLocalLogin(email, password) {
+async function fallbackLocalLogin(email, password) {
     const localUsers = {
         'anyi.mosquera@dechss.com': { password: 'Admin123!', role: 'admin', name: 'Anyi Mosquera' },
         'quebin.lotero@dechss.com': { password: 'Worker123!', role: 'worker', name: 'Quebin Lotero' }
@@ -400,18 +409,15 @@ function fallbackLocalLogin(email, password) {
     saveLocalSession();
 
     if (USE_SUPABASE && supabaseClient) {
-        fetchLatestTasks().catch(err => console.warn('fetchLatestTasks error', err));
+        // Cargar tareas primero
+        await fetchLatestTasks();
         
-        // Si es worker, cargar sus conteos desde Supabase
+        // Luego, si es worker, cargar sus conteos
         if (user.role === 'worker') {
-            fetchWorkerCountsForCurrentUser().catch(err => console.warn('fetchWorkerCountsForCurrentUser error', err));
+            await fetchWorkerCountsForCurrentUser();
         }
         
         subscribeTaskAssignments();
-    }
-
-    if (user.role === 'worker') {
-        requestNotificationPermission();
     }
 
     if (user.role === 'worker') {
@@ -436,9 +442,11 @@ async function signInUser(user) {
     AppState.currentUserEmail = user?.email || '';
     updateUserDisplay();
     saveLocalSession();
+    
+    // Cargar tareas primero
     await fetchLatestTasks();
     
-    // Si es worker, cargar sus conteos desde Supabase
+    // Luego, si es worker, cargar sus conteos
     if (role === 'worker') {
         await fetchWorkerCountsForCurrentUser();
     }
@@ -576,6 +584,8 @@ async function fetchWorkerCounts() {
 async function fetchWorkerCountsForCurrentUser() {
     if (!supabaseClient || AppState.currentRole !== 'worker') return;
     
+    console.log('Cargando conteos para:', AppState.currentUserEmail);
+    
     const { data, error } = await supabaseClient
         .from('worker_counts')
         .select('*')
@@ -586,6 +596,8 @@ async function fetchWorkerCountsForCurrentUser() {
         return;
     }
     
+    console.log('Conteos cargados:', data);
+    
     if (data && data.length > 0) {
         // Convertir registros de worker_counts en AppState.counts
         AppState.counts = data.map(record => ({
@@ -594,6 +606,12 @@ async function fetchWorkerCountsForCurrentUser() {
             unidades: record.unidades,
             averias: record.averias
         }));
+        console.log('AppState.counts actualizado:', AppState.counts);
+        saveData();
+        renderWorkerTasks();
+    } else {
+        console.log('No hay conteos previos para este worker');
+        AppState.counts = [];
         saveData();
         renderWorkerTasks();
     }
@@ -672,8 +690,9 @@ function refreshTasksState(newRow) {
 }
 
 async function syncCountsToSupabase() {
-    if (!supabaseClient || !navigator.onLine) return;
+    if (!supabaseClient || !navigator.onLine) return false;
     
+    let hasError = false;
     // Sincronizar cada conteo como un registro individual en worker_counts
     for (const count of AppState.counts) {
         const { error } = await supabaseClient.from('worker_counts').upsert([{
@@ -687,8 +706,10 @@ async function syncCountsToSupabase() {
         
         if (error) {
             console.warn('Error sincronizando conteo para', count.item.id, ':', error);
+            hasError = true;
         }
     }
+    return !hasError;
 }
 
 async function pushTasksToSupabase() {
@@ -1629,7 +1650,7 @@ function closeCountModal() {
     currentCountingItem = null;
 }
 
-function submitProductCount() {
+async function submitProductCount() {
     const unidades = parseInt(document.getElementById('count-unidades').value) || 0;
     const cajas = parseInt(document.getElementById('count-cajas').value) || 0;
     const averias = parseInt(document.getElementById('count-averias').value) || 0;
@@ -1648,14 +1669,24 @@ function submitProductCount() {
     saveData();
     updateAdminDashboard();
     
-    // Sincronizar conteos a Supabase en tiempo real
-    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
-        syncCountsToSupabase();
-    }
-    
     closeCountModal();
     renderWorkerTasks();
-    showToast('¡Conteo registrado y sincronizado!', 'success');
+    
+    // Sincronizar conteos a Supabase en tiempo real
+    if (USE_SUPABASE && supabaseClient) {
+        if (navigator.onLine) {
+            const success = await syncCountsToSupabase();
+            if (success) {
+                showToast('¡Conteo registrado y sincronizado en la nube!', 'success');
+            } else {
+                showToast('Guardado localmente. Error de sincronización (revisa consola o base de datos).', 'warning');
+            }
+        } else {
+            showToast('Guardado localmente. Sin conexión para sincronizar.', 'warning');
+        }
+    } else {
+        showToast('¡Conteo guardado localmente!', 'success');
+    }
 }
 
 function showToast(message, type = 'info') {

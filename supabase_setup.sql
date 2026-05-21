@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS public.worker_counts (
   averias integer DEFAULT 0,
   item jsonb,
   created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
+  updated_at timestamptz DEFAULT now(),
+  CONSTRAINT worker_counts_task_id_worker_email_key UNIQUE (task_id, worker_email)
 );
 
 ALTER TABLE public.worker_counts ENABLE ROW LEVEL SECURITY;
