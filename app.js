@@ -546,7 +546,11 @@ async function fetchLatestTasks() {
     }
     if (data?.length > 0) {
         const latest = data[0];
-        if (Array.isArray(latest.payload)) {
+        if (latest.status === 'counts' && latest.payload?.counts) {
+            // Cargar conteos si están disponibles
+            AppState.counts = latest.payload.counts;
+            saveData();
+        } else if (Array.isArray(latest.payload)) {
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
             saveData();
             if (AppState.currentRole === 'worker') renderWorkerTasks();
@@ -560,12 +564,24 @@ function subscribeTaskAssignments() {
 
     const refreshTasks = payload => {
         const newRow = payload?.new;
-        refreshTasksState(newRow);
+        if (newRow?.status === 'counts') {
+            // Sincronizar conteos del worker
+            if (newRow.payload?.counts && Array.isArray(newRow.payload.counts)) {
+                AppState.counts = newRow.payload.counts;
+                saveData();
+                if (AppState.currentRole === 'admin') {
+                    updateAdminDashboard();
+                }
+            }
+        } else {
+            // Sincronizar tareas
+            refreshTasksState(newRow);
+        }
     };
 
     taskSubscription = supabaseClient.channel('public:task_assignments')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: SUPABASE_TASKS_TABLE }, refreshTasks)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: SUPABASE_TASKS_TABLE }, refreshTasks)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'task_assignments' }, refreshTasks)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'task_assignments' }, refreshTasks)
         .subscribe(status => {
             console.log('Task subscription status:', status);
         });
@@ -579,6 +595,29 @@ function refreshTasksState(newRow) {
     updateAdminDashboard();
     if (AppState.currentRole === 'worker') {
         notifyNewTaskAssignment(AppState.todayTasks.length);
+    }
+}
+
+async function syncCountsToSupabase() {
+    if (!supabaseClient || !navigator.onLine) return;
+    
+    const countsPayload = {
+        counts: AppState.counts,
+        updated_at: new Date().toISOString(),
+        updated_by: AppState.currentUserEmail
+    };
+    
+    const { error } = await supabaseClient
+        .from('task_assignments')
+        .upsert([{
+            id: 'counts-' + AppState.currentUserEmail,
+            status: 'counts',
+            payload: countsPayload,
+            published_by_email: AppState.currentUserEmail
+        }], { onConflict: 'id' });
+    
+    if (error) {
+        console.warn('Error sincronizando conteos:', error);
     }
 }
 
@@ -1538,9 +1577,15 @@ function submitProductCount() {
 
     saveData();
     updateAdminDashboard();
+    
+    // Sincronizar conteos a Supabase en tiempo real
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        syncCountsToSupabase();
+    }
+    
     closeCountModal();
     renderWorkerTasks();
-    showToast('¡Conteo registrado!', 'success');
+    showToast('¡Conteo registrado y sincronizado!', 'success');
 }
 
 function showToast(message, type = 'info') {
