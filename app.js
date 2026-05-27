@@ -1565,6 +1565,10 @@ function generatePDF(records, dateStr, dateFile) {
 
 // --- Lógica TRABAJADOR ---
 
+function handleWorkerSearch() {
+    renderWorkerTasks();
+}
+
 function renderWorkerTasks() {
     const list = document.getElementById('worker-task-list');
     const emptyState = document.getElementById('worker-empty-state');
@@ -1580,6 +1584,28 @@ function renderWorkerTasks() {
         return;
     }
 
+    const searchInput = document.getElementById('worker-search');
+    const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
+
+    const filteredTasks = AppState.todayTasks.filter(task => {
+        if (!searchTerm) return true;
+        return task.name.toLowerCase().includes(searchTerm) || task.code.toLowerCase().includes(searchTerm);
+    });
+
+    if (filteredTasks.length === 0 && searchTerm) {
+        document.getElementById('worker-assigned-summary').textContent = 'No se encontraron coincidencias.';
+        list.innerHTML = `
+            <div class="text-center py-4 text-muted" style="grid-column: 1/-1;">
+                <i data-lucide="search-code" style="width: 32px; height: 32px; margin-bottom: 8px;"></i>
+                <p>No hay productos que coincidan con la búsqueda.</p>
+            </div>
+        `;
+        list.classList.remove('hidden');
+        emptyState.classList.add('hidden');
+        lucide.createIcons();
+        return;
+    }
+
     document.getElementById('worker-assigned-summary').textContent = pendingCount === 0 
         ? '¡Has terminado todo por hoy!' 
         : `Tienes ${pendingCount} productos pendientes por revisar.`;
@@ -1589,7 +1615,7 @@ function renderWorkerTasks() {
     list.innerHTML = '';
 
     const groups = {};
-    AppState.todayTasks.forEach(task => {
+    filteredTasks.forEach(task => {
         if(!groups[task.provider]) groups[task.provider] = [];
         groups[task.provider].push(task);
     });
@@ -1598,9 +1624,10 @@ function renderWorkerTasks() {
         let countedInGroup = 0;
         tasks.forEach(t => { if(AppState.counts.find(c => c.item.id === t.id)) countedInGroup++; });
         const allDone = countedInGroup === tasks.length;
+        const forceOpen = searchTerm.length > 0;
 
         const groupDiv = document.createElement('div');
-        groupDiv.className = `provider-group-card ${provider} ${allDone ? 'all-done' : ''}`;
+        groupDiv.className = `provider-group-card ${provider} ${allDone ? 'all-done' : ''} ${forceOpen ? 'open' : ''}`;
         
         const header = document.createElement('div');
         header.className = 'provider-group-header';

@@ -366,6 +366,11 @@
                     </div>
                 </section>
 
+                <div class="search-box-container" style="margin-top: 1.25rem; margin-bottom: 0.5rem;">
+                    <i data-lucide="search" class="search-icon"></i>
+                    <input type="text" id="worker-search" placeholder="Buscar producto por nombre o código..." oninput="handleWorkerSearch()">
+                </div>
+
                 <div class="worker-task-grid" id="worker-task-list"></div>
                 
                 <div id="worker-empty-state" class="empty-state hidden">
