@@ -1391,8 +1391,13 @@ window.finishDay = async function() {
         return record;
     });
 
-    // Generate PDF
-    generatePDF(dayRecords, dateStr, dateFile);
+    try {
+        generatePDF(dayRecords, dateStr, dateFile);
+    } catch (e) {
+        console.warn('Error generating PDF:', e);
+        showToast('Error al generar PDF. Revisa la consola.', 'danger');
+    }
+    await generateExcel(dayRecords, dateFile);
 
     if (USE_SUPABASE) {
         await pushHistoryToSupabase(dayRecords);
@@ -1562,6 +1567,63 @@ function generatePDF(records, dateStr, dateFile) {
 
     doc.save(`Inventario_DECHSS_${dateFile}.pdf`);
 }
+
+// --- Export Excel Generation ---
+function generateExcel(records, dateFile) {
+    if (typeof XLSX === 'undefined') {
+        showToast('Librería XLSX no disponible. No se pudo generar el Excel.', 'danger');
+        return;
+    }
+    // Convert records to sheet data
+    const data = records.map(r => ({
+        'Producto': r.name,
+        'Código': r.code,
+        'Emb.': r.embalaje,
+        'Inv. Excel': r.expectedStock,
+        'Cajas': r.cajas,
+        'Uds': r.unidades,
+        'Total': r.totalContado,
+        'Dif. Uds': r.diffUds,
+        'Dif. Valor ($)': r.descuadreFormateado,
+        'Averías': r.averias
+    }));
+    // Add totals row
+    const totalDiffValorRaw = records.reduce((s, r) => s + (parseFloat(r.diffValorRaw) || 0), 0);
+    const fmtTotal = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(totalDiffValorRaw);
+    data.push({
+        'Producto': 'Totales',
+        'Código': '',
+        'Emb.': '',
+        'Inv. Excel': '',
+        'Cajas': '',
+        'Uds': '',
+        'Total': '',
+        'Dif. Uds': '',
+        'Dif. Valor ($)': fmtTotal,
+        'Averías': ''
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data, { origin: 'A1' });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
+    // Set column widths for better readability
+    const wscols = [
+        { wch: 30 }, // Producto
+        { wch: 15 }, // Código
+        { wch: 8 },  // Emb.
+        { wch: 12 }, // Inv. Excel
+        { wch: 8 },  // Cajas
+        { wch: 8 },  // Uds
+        { wch: 10 }, // Total
+        { wch: 10 }, // Dif. Uds
+        { wch: 15 }, // Dif. Valor ($)
+        { wch: 10 }  // Averías
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Inventario_DECHSS_${dateFile}.xlsx`);
+}
+
 
 // --- Lógica TRABAJADOR ---
 
