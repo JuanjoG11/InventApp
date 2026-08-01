@@ -8,6 +8,7 @@ const AppState = {
     currentUserId: null,
     currentUserName: null,
     currentUserEmail: null,
+    currentBloque: null,  // bloque asignado al worker actual
     catalog: [],
     todayTasks: [],
     counts: [],
@@ -97,7 +98,8 @@ function saveLocalSession() {
         currentRole: AppState.currentRole,
         currentUserId: AppState.currentUserId,
         currentUserName: AppState.currentUserName,
-        currentUserEmail: AppState.currentUserEmail
+        currentUserEmail: AppState.currentUserEmail,
+        currentBloque: AppState.currentBloque || null
     };
     localStorage.setItem('ia_session', JSON.stringify(sessionData));
 }
@@ -119,6 +121,7 @@ async function restoreLocalSession() {
         AppState.currentUserId = sessionData.currentUserId || null;
         AppState.currentUserName = sessionData.currentUserName || sessionData.currentUserEmail || (sessionData.currentRole === 'admin' ? 'Administrador' : 'Trabajador');
         AppState.currentUserEmail = sessionData.currentUserEmail || '';
+        AppState.currentBloque = sessionData.currentBloque || null;
 
         updateRoleSwitcherVisibility(AppState.currentRole);
         document.getElementById('login-screen').style.display = 'none';
@@ -312,6 +315,7 @@ window.logout = async function() {
     AppState.currentUserId = null;
     AppState.currentUserName = '';
     AppState.currentUserEmail = '';
+    AppState.currentBloque = null;
     document.querySelector('.app-container').style.display = 'none';
     showLoginScreen();
     showToast('Sesión cerrada correctamente.', 'success');
@@ -387,8 +391,20 @@ async function handleLogin(event) {
 
 async function fallbackLocalLogin(email, password) {
     const localUsers = {
+        // --- ADMIN ---
         'anyi.mosquera@dechss.com': { password: 'Admin123!', role: 'admin', name: 'Anyi Mosquera' },
-        'quebin.lotero@dechss.com': { password: 'Worker123!', role: 'worker', name: 'Quebin Lotero' }
+        // --- WORKERS (cada uno tiene un bloque asignado) ---
+        // El campo "bloque" debe coincidir exactamente con el nombre de bloque en las tareas
+        'quebin.lotero@dechss.com':    { password: 'Worker123!', role: 'worker', name: 'Quebin Lotero',    bloque: 'Bloque 1' },
+        'worker2@dechss.com':          { password: 'Worker2!',   role: 'worker', name: 'Worker 2',         bloque: 'Bloque 2' },
+        'worker3@dechss.com':          { password: 'Worker3!',   role: 'worker', name: 'Worker 3',         bloque: 'Bloque 3' },
+        'worker4@dechss.com':          { password: 'Worker4!',   role: 'worker', name: 'Worker 4',         bloque: 'Bloque 4' },
+        'worker5@dechss.com':          { password: 'Worker5!',   role: 'worker', name: 'Worker 5',         bloque: 'Bloque 5' },
+        'worker6@dechss.com':          { password: 'Worker6!',   role: 'worker', name: 'Worker 6',         bloque: 'Bloque 6' },
+        'worker7@dechss.com':          { password: 'Worker7!',   role: 'worker', name: 'Worker 7',         bloque: 'Bloque 7' },
+        'worker8@dechss.com':          { password: 'Worker8!',   role: 'worker', name: 'Worker 8',         bloque: 'Bloque 8' },
+        'worker9@dechss.com':          { password: 'Worker9!',   role: 'worker', name: 'Worker 9',         bloque: 'Bloque 9' },
+        'worker10@dechss.com':         { password: 'Worker10!',  role: 'worker', name: 'Worker 10',        bloque: 'Bloque 10' },
     };
 
     const user = localUsers[email?.toLowerCase()];
@@ -400,6 +416,7 @@ async function fallbackLocalLogin(email, password) {
     AppState.currentUserId = null;
     AppState.currentUserName = user.name || (user.role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = email;
+    AppState.currentBloque = user.bloque || null; // bloque asignado al worker
     updateRoleSwitcherVisibility(user.role);
 
     document.getElementById('login-screen').style.display = 'none';
@@ -464,7 +481,10 @@ function updateUserDisplay() {
         if (emailEl) emailEl.textContent = AppState.currentUserEmail || '';
         if (workerWelcome) {
             if (AppState.currentRole === 'worker') {
-                workerWelcome.textContent = `¡Hola, ${AppState.currentUserName || 'Auxiliar'}!`;
+                const bloqueTag = AppState.currentBloque
+                    ? ` <span style="font-size:0.75rem;background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b;padding:2px 8px;border-radius:12px;vertical-align:middle;">${AppState.currentBloque}</span>`
+                    : '';
+                workerWelcome.innerHTML = `¡Hola, ${AppState.currentUserName || 'Auxiliar'}!${bloqueTag}`;
             } else {
                 workerWelcome.textContent = '';
             }
@@ -701,7 +721,8 @@ async function syncCountsToSupabase() {
             cajas: count.cajas,
             unidades: count.unidades,
             averias: count.averias,
-            item: count.item
+            item: count.item,
+            bloque: count.item.bloque || ''
         }], { onConflict: 'task_id,worker_email' });
         
         if (error) {
@@ -978,6 +999,7 @@ function handleExcelUpload(event) {
             let embalaje = 1;
             let cantidad = 0;
             let precio = 0;
+            let bloque = '';
 
             keys.forEach(k => {
                 const kl = k.toLowerCase();
@@ -986,6 +1008,7 @@ function handleExcelUpload(event) {
                 if (kl.includes('emb')) embalaje = row[k];
                 if (kl.includes('inv') || kl.includes('cant') || kl.includes('stock')) cantidad = row[k];
                 if (kl.includes('vlr') || kl.includes('val') || kl.includes('prec') || kl.includes('iva')) precio = row[k];
+                if (kl.includes('bloque') || kl.includes('block') || kl.includes('zona') || kl.includes('pasillo')) bloque = String(row[k] || '').trim();
             });
 
             if (codigo && nombre) {
@@ -1007,22 +1030,28 @@ function handleExcelUpload(event) {
                         embalaje: embVal,
                         expectedStock: stockVal,
                         precio: priceVal,
-                        provider: selectedProvider
+                        provider: selectedProvider,
+                        bloque: bloque || ''
                     };
                 }
             }
         });
 
         newItems = Object.values(itemsMap);
+        const tieneBloques = newItems.some(i => i.bloque && i.bloque.trim() !== '');
 
         if (newItems.length > 0) {
-            // Al subir un excel, reemplazamos las tareas de hoy por lo subido
-            AppState.catalog = [...AppState.catalog, ...newItems].filter((v,i,a)=>a.findIndex(v2=>(v2.code===v.code))===i); // merge unique
-            AppState.todayTasks = newItems; // Se asigna automáticamente para hoy
-            AppState.counts = []; // Reiniciamos los conteos si hay carga masiva nueva
+            AppState.catalog = [...AppState.catalog, ...newItems].filter((v,i,a)=>a.findIndex(v2=>(v2.code===v.code))===i);
+            AppState.todayTasks = newItems;
+            AppState.counts = [];
             saveData();
             renderAdminCatalog('all');
-            showToast(`¡Excel cargado! Se han consolidado y asignado ${newItems.length} productos únicos para contar hoy.`, 'success');
+            if (tieneBloques) {
+                const bloquesList = [...new Set(newItems.map(i => i.bloque).filter(Boolean))].sort();
+                showToast(`¡Excel cargado! ${newItems.length} productos en ${bloquesList.length} bloques: ${bloquesList.join(', ')}`, 'success');
+            } else {
+                showToast(`¡Excel cargado! ${newItems.length} productos. Sin columna "Bloque" — asígnalos manualmente en la tabla.`, 'success');
+            }
         } else {
             showToast('No se encontraron columnas de "Código" y "Nombre" en el archivo.', 'danger');
         }
@@ -1042,6 +1071,12 @@ function renderAdminCatalog(providerFilter) {
 
         const isAssigned = AppState.todayTasks.some(t => t.id === item.id);
 
+        // Opciones de bloque para el select
+        const bloqueOptions = ['', 'Bloque 1','Bloque 2','Bloque 3','Bloque 4','Bloque 5',
+                               'Bloque 6','Bloque 7','Bloque 8','Bloque 9','Bloque 10']
+            .map(b => `<option value="${b}" ${(item.bloque||'')=== b ? 'selected':''}>${b||'— Sin bloque —'}</option>`)
+            .join('');
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>
@@ -1054,6 +1089,12 @@ function renderAdminCatalog(providerFilter) {
                 <span class="product-code-tag">${item.code}</span>
             </td>
             <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
+            <td>
+                <select class="input-form bloque-select" style="padding:4px 8px;font-size:0.8rem;height:32px;"
+                    onchange="setItemBloque('${item.id}', this.value)">
+                    ${bloqueOptions}
+                </select>
+            </td>
             <td class="action-cell">
                 ${isAssigned ? `<button type="button" class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
             </td>
@@ -1061,6 +1102,15 @@ function renderAdminCatalog(providerFilter) {
         tbody.appendChild(tr);
     });
     lucide.createIcons();
+}
+
+// Asigna o cambia el bloque de un producto del catálogo y de las tareas de hoy
+function setItemBloque(itemId, bloque) {
+    const catItem = AppState.catalog.find(i => i.id === itemId);
+    if (catItem) catItem.bloque = bloque;
+    const taskItem = AppState.todayTasks.find(i => i.id === itemId);
+    if (taskItem) taskItem.bloque = bloque;
+    saveData();
 }
 
 function filterCatalogByProvider(provider, event) {
@@ -1183,8 +1233,17 @@ function updateAdminDashboard() {
     monitorTbody.innerHTML = '';
 
     if(AppState.todayTasks.length === 0) {
-        monitorTbody.innerHTML = '<tr><td colspan="6" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
+        monitorTbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
     }
+
+    // Agrupar conteos por bloque para el resumen visual
+    const bloqueProgress = {};
+    AppState.todayTasks.forEach(t => {
+        const b = t.bloque || '— Sin bloque —';
+        if (!bloqueProgress[b]) bloqueProgress[b] = { total: 0, counted: 0 };
+        bloqueProgress[b].total++;
+        if (AppState.counts.find(c => c.item.id === t.id)) bloqueProgress[b].counted++;
+    });
 
     AppState.counts.forEach(countInfo => {
         totalAverias += parseInt(countInfo.averias) || 0;
@@ -1214,6 +1273,7 @@ function updateAdminDashboard() {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><strong>${countInfo.item.name}</strong><br><span style="font-size:0.75rem">${countInfo.item.code}</span></td>
+            <td><span style="font-size:0.78rem;opacity:0.8">${countInfo.item.bloque || '—'}</span></td>
             <td>${emb}</td>
             <td>${expected}</td>
             <td><strong>${totalContado}</strong> ${diffHtml}</td>
@@ -1242,6 +1302,28 @@ function updateAdminDashboard() {
     if (averiasEl) {
         averiasEl.textContent = totalAverias;
     }
+
+    // Resumen de bloques: mostrar progreso por bloque en el monitor
+    let bloqueBarEl = document.getElementById('monitor-bloques-summary');
+    if (!bloqueBarEl) {
+        bloqueBarEl = document.createElement('div');
+        bloqueBarEl.id = 'monitor-bloques-summary';
+        bloqueBarEl.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;';
+        const monitorSection = document.getElementById('live-detail-table-body')?.closest('.section-card');
+        if (monitorSection) {
+            const tablaWrapper = document.getElementById('live-detail-table-body')?.closest('.table-responsive');
+            if (tablaWrapper) monitorSection.insertBefore(bloqueBarEl, tablaWrapper);
+        }
+    }
+    bloqueBarEl.innerHTML = '';
+    Object.entries(bloqueProgress).sort(([a],[b])=>a.localeCompare(b)).forEach(([bloque, prog]) => {
+        const pct = prog.total > 0 ? Math.round((prog.counted / prog.total) * 100) : 0;
+        const color = pct === 100 ? '#059669' : pct > 0 ? '#f59e0b' : '#6b7280';
+        const chip = document.createElement('div');
+        chip.style.cssText = `display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;font-size:0.78rem;font-weight:600;background:${color}22;border:1px solid ${color};color:${color};`;
+        chip.innerHTML = `<span>${bloque}</span><span>${prog.counted}/${prog.total}</span>`;
+        bloqueBarEl.appendChild(chip);
+    });
 }
 
 function renderAdminHistory() {
@@ -1634,13 +1716,26 @@ function handleWorkerSearch() {
 function renderWorkerTasks() {
     const list = document.getElementById('worker-task-list');
     const emptyState = document.getElementById('worker-empty-state');
-    
-    const pendingCount = AppState.todayTasks.length - AppState.counts.length;
-    document.getElementById('w-stat-pending').textContent = pendingCount;
-    document.getElementById('w-stat-completed').textContent = AppState.counts.length;
-    
-    if (AppState.todayTasks.length === 0) {
-        document.getElementById('worker-assigned-summary').textContent = 'No hay tareas cargadas.';
+
+    // Filtrar tareas por bloque del worker actual
+    const myBloque = AppState.currentBloque || null;
+    const myTasks = myBloque
+        ? AppState.todayTasks.filter(t => (t.bloque || '').trim() === myBloque.trim())
+        : AppState.todayTasks; // si no tiene bloque asignado ve todo (compatibilidad)
+
+    const myCounts = myBloque
+        ? AppState.counts.filter(c => (c.item.bloque || '').trim() === myBloque.trim())
+        : AppState.counts;
+
+    const pendingCount = myTasks.length - myCounts.length;
+    document.getElementById('w-stat-pending').textContent = Math.max(0, pendingCount);
+    document.getElementById('w-stat-completed').textContent = myCounts.length;
+
+    if (myTasks.length === 0) {
+        const msg = AppState.todayTasks.length > 0 && myBloque
+            ? `No hay productos asignados a tu bloque (${myBloque}). Espera que el admin configure los bloques.`
+            : 'El administrador no ha publicado productos para contar hoy.';
+        document.getElementById('worker-assigned-summary').textContent = msg;
         list.classList.add('hidden');
         emptyState.classList.remove('hidden');
         return;
@@ -1649,7 +1744,7 @@ function renderWorkerTasks() {
     const searchInput = document.getElementById('worker-search');
     const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
 
-    const filteredTasks = AppState.todayTasks.filter(task => {
+    const filteredTasks = myTasks.filter(task => {
         if (!searchTerm) return true;
         return task.name.toLowerCase().includes(searchTerm) || task.code.toLowerCase().includes(searchTerm);
     });
@@ -1668,9 +1763,11 @@ function renderWorkerTasks() {
         return;
     }
 
-    document.getElementById('worker-assigned-summary').textContent = pendingCount === 0 
-        ? '¡Has terminado todo por hoy!' 
-        : `Tienes ${pendingCount} productos pendientes por revisar.`;
+    // Mostrar bloque activo del worker en el resumen
+    const bloqueLabel = myBloque ? ` — ${myBloque}` : '';
+    document.getElementById('worker-assigned-summary').textContent = pendingCount <= 0
+        ? `¡Has terminado todo por hoy!${bloqueLabel}`
+        : `Tienes ${pendingCount} productos pendientes${bloqueLabel}`;
 
     list.classList.remove('hidden');
     emptyState.classList.add('hidden');
