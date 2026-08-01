@@ -1360,20 +1360,29 @@ function updateAdminDashboard() {
     if (!bloqueBarEl) {
         bloqueBarEl = document.createElement('div');
         bloqueBarEl.id = 'monitor-bloques-summary';
-        bloqueBarEl.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;';
-        const monitorSection = document.getElementById('live-detail-table-body')?.closest('.section-card');
-        if (monitorSection) {
-            const tablaWrapper = document.getElementById('live-detail-table-body')?.closest('.table-responsive');
-            if (tablaWrapper) monitorSection.insertBefore(bloqueBarEl, tablaWrapper);
-        }
+        bloqueBarEl.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;margin-bottom:4px;';
+        // Insertar justo antes de la tabla del monitor (siempre está en el DOM aunque la pestaña esté oculta)
+        const tablaWrapper = document.getElementById('live-detail-table-body')?.closest('.table-responsive');
+        if (tablaWrapper) tablaWrapper.parentNode.insertBefore(bloqueBarEl, tablaWrapper);
     }
     bloqueBarEl.innerHTML = '';
     Object.entries(bloqueProgress).sort(([a],[b])=>a.localeCompare(b)).forEach(([bloque, prog]) => {
         const pct = prog.total > 0 ? Math.round((prog.counted / prog.total) * 100) : 0;
-        const color = pct === 100 ? '#059669' : pct > 0 ? '#f59e0b' : '#6b7280';
+        const done = pct === 100;
+        const color = done ? '#059669' : pct > 0 ? '#f59e0b' : '#6b7280';
+
         const chip = document.createElement('div');
-        chip.style.cssText = `display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;font-size:0.78rem;font-weight:600;background:${color}22;border:1px solid ${color};color:${color};`;
+        chip.style.cssText = `display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;background:${color}22;border:1px solid ${color};color:${color};`;
         chip.innerHTML = `<span>${bloque}</span><span>${prog.counted}/${prog.total}</span>`;
+
+        if (done) {
+            const btn = document.createElement('button');
+            btn.textContent = '📄 Finalizar';
+            btn.style.cssText = `margin-left:4px;padding:2px 10px;border-radius:12px;background:${color};color:#fff;border:none;cursor:pointer;font-size:0.72rem;font-weight:700;`;
+            btn.addEventListener('click', () => finishBloque(bloque));
+            chip.appendChild(btn);
+        }
+
         bloqueBarEl.appendChild(chip);
     });
 }
@@ -1482,6 +1491,96 @@ function clearAllHistory() {
         showToast('Historial borrado', 'success');
     }
 }
+
+// Finalizar un bloque específico: genera PDF/Excel solo con ese bloque y lo elimina de las tareas activas
+window.finishBloque = async function(bloque) {
+    const bloqueItems = AppState.todayTasks.filter(t => (t.bloque || '').trim() === bloque.trim());
+    if (bloqueItems.length === 0) {
+        showToast(`No hay productos en ${bloque}.`, 'danger');
+        return;
+    }
+
+    const sinContar = bloqueItems.filter(t => !AppState.counts.find(c => c.item.id === t.id));
+    if (sinContar.length > 0) {
+        if (!confirm(`${bloque}: faltan ${sinContar.length} producto(s) sin contar. ¿Finalizar igual?`)) return;
+    } else {
+        if (!confirm(`¿Finalizar ${bloque} y generar PDF/Excel?`)) return;
+    }
+
+    const dateStr = new Date().toLocaleDateString('es-CO');
+    const dateFile = new Date().toISOString().slice(0, 10);
+    const bloqueSlug = bloque.replace(/\s+/g, '_');
+
+    const bloqueRecords = bloqueItems.map(item => {
+        const countEntry = AppState.counts.find(c => c.item.id === item.id);
+        const cajas = countEntry ? parseInt(countEntry.cajas) || 0 : 0;
+        const unidades = countEntry ? parseInt(countEntry.unidades) || 0 : 0;
+        const averias = countEntry ? parseInt(countEntry.averias) || 0 : 0;
+        const emb = item.embalaje || 1;
+        const totalContado = (cajas * emb) + unidades;
+        const diff = totalContado - (item.expectedStock || 0);
+        const diffValor = diff * (item.precio || 0);
+        const fmtVal = diffValor !== 0
+            ? new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor)
+            : '-';
+
+        const record = {
+            date: dateStr,
+            name: item.name,
+            code: item.code,
+            provider: item.provider,
+            bloque: item.bloque || '',
+            embalaje: emb,
+            precio: item.precio || 0,
+            expectedStock: item.expectedStock || 0,
+            cajas,
+            unidades,
+            totalContado,
+            diffUds: diff,
+            diffValorRaw: diffValor,
+            descuadreFormateado: fmtVal,
+            averias
+        };
+        AppState.history.push(record);
+        return record;
+    });
+
+    // Generar PDF y Excel solo con este bloque
+    try {
+        generatePDF(bloqueRecords, dateStr, `${dateFile}_${bloqueSlug}`);
+    } catch (e) {
+        console.warn('Error generando PDF de bloque:', e);
+        showToast('Error al generar PDF. Revisa la consola.', 'danger');
+    }
+    await generateExcel(bloqueRecords, `${dateFile}_${bloqueSlug}`);
+
+    if (USE_SUPABASE) {
+        await pushHistoryToSupabase(bloqueRecords);
+    }
+
+    // Eliminar este bloque de las tareas activas y sus conteos
+    const idsBloque = new Set(bloqueItems.map(i => i.id));
+    AppState.todayTasks = AppState.todayTasks.filter(t => !idsBloque.has(t.id));
+    AppState.counts = AppState.counts.filter(c => !idsBloque.has(c.item.id));
+    saveData();
+
+    // Sincronizar tareas actualizadas a Supabase para que los workers vean solo lo pendiente
+    if (USE_SUPABASE && supabaseClient) {
+        await pushTasksToSupabase();
+        // Limpiar conteos de este bloque en Supabase
+        try {
+            for (const id of idsBloque) {
+                await supabaseClient.from('worker_counts').delete().eq('task_id', id);
+            }
+        } catch (e) {
+            console.warn('Error limpiando conteos del bloque en Supabase:', e);
+        }
+    }
+
+    updateAdminDashboard();
+    renderAdminHistory();
+    showToast(`✅ ${bloque} finalizado. PDF y Excel generados.`, 'success');
+};
 
 // Finalizar día: guardar en historial y generar PDF
 window.finishDay = async function() {
