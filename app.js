@@ -656,7 +656,13 @@ async function fetchLatestTasks() {
         if (Array.isArray(latest.payload)) {
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
             saveData();
-            if (AppState.currentRole === 'worker') renderWorkerTasks();
+            // Log diagnóstico para workers
+            if (AppState.currentRole === 'worker') {
+                const miBloque = AppState.currentBloque;
+                const misProductos = AppState.todayTasks.filter(t => (t.bloque||'').trim() === (miBloque||'').trim());
+                console.log(`👷 Worker [${AppState.currentUserEmail}] bloque: "${miBloque}" | Total tareas: ${AppState.todayTasks.length} | Mis productos: ${misProductos.length}`);
+                renderWorkerTasks();
+            }
         }
     }
     
@@ -1201,6 +1207,22 @@ async function publishDailyTask() {
         showToast('Debes seleccionar productos para publicar.', 'danger');
         return;
     }
+
+    // Verificar que los productos tengan bloques asignados
+    const sinBloque = AppState.todayTasks.filter(t => !t.bloque || t.bloque.trim() === '').length;
+    if (sinBloque > 0) {
+        showToast(`⚠️ ${sinBloque} productos sin bloque asignado. Los workers solo verán los de su bloque. Asigna bloques en la tabla antes de publicar.`, 'warning');
+        // No bloqueamos — puede publicar igual si quiere
+    }
+
+    // Log de diagnóstico: mostrar en consola qué bloques van en el payload
+    const bloqueMap = {};
+    AppState.todayTasks.forEach(t => {
+        const b = t.bloque || '(sin bloque)';
+        bloqueMap[b] = (bloqueMap[b] || 0) + 1;
+    });
+    console.log('📦 Publicando tareas con bloques:', bloqueMap);
+
     AppState.counts = [];
     saveData();
 
@@ -1214,7 +1236,8 @@ async function publishDailyTask() {
         }
     }
 
-    showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
+    const bloqueResumen = Object.entries(bloqueMap).map(([b,n]) => `${b}: ${n}`).join(' | ');
+    showToast(`✅ Publicado: ${AppState.todayTasks.length} productos. ${bloqueResumen}`, 'success');
 }
 
 function updateAdminDashboard() {
@@ -1732,9 +1755,16 @@ function renderWorkerTasks() {
     document.getElementById('w-stat-completed').textContent = myCounts.length;
 
     if (myTasks.length === 0) {
-        const msg = AppState.todayTasks.length > 0 && myBloque
-            ? `No hay productos asignados a tu bloque (${myBloque}). Espera que el admin configure los bloques.`
-            : 'El administrador no ha publicado productos para contar hoy.';
+        let msg = 'El administrador no ha publicado productos para contar hoy.';
+        if (AppState.todayTasks.length > 0 && myBloque) {
+            // Hay tareas pero ninguna tiene este bloque — posible causa: admin no asignó bloques o no republicó
+            const algunaTienBloque = AppState.todayTasks.some(t => t.bloque && t.bloque.trim() !== '');
+            if (!algunaTienBloque) {
+                msg = `Hay ${AppState.todayTasks.length} productos cargados pero sin bloques asignados. Pídele al administrador que asigne bloques y vuelva a publicar.`;
+            } else {
+                msg = `No hay productos en tu bloque (${myBloque}). Pídele al admin que verifique la asignación.`;
+            }
+        }
         document.getElementById('worker-assigned-summary').textContent = msg;
         list.classList.add('hidden');
         emptyState.classList.remove('hidden');
