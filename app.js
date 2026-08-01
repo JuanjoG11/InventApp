@@ -130,7 +130,7 @@ async function restoreLocalSession() {
         updateUserDisplay();
 
         if (USE_SUPABASE && supabaseClient) {
-            // Cargar tareas primero
+            // Cargar tareas primero (fetchLatestTasks llama renderWorkerTasks al final)
             await fetchLatestTasks();
             
             // Luego, si es worker, cargar sus conteos
@@ -139,6 +139,9 @@ async function restoreLocalSession() {
             }
             
             subscribeTaskAssignments();
+        } else if (AppState.currentRole === 'worker') {
+            // Sin Supabase: renderizar con lo que hay en localStorage
+            renderWorkerTasks();
         }
 
         if (AppState.currentRole === 'worker') {
@@ -426,15 +429,17 @@ async function fallbackLocalLogin(email, password) {
     saveLocalSession();
 
     if (USE_SUPABASE && supabaseClient) {
-        // Cargar tareas primero
+        // fetchLatestTasks llama renderWorkerTasks al terminar
         await fetchLatestTasks();
         
-        // Luego, si es worker, cargar sus conteos
         if (user.role === 'worker') {
             await fetchWorkerCountsForCurrentUser();
         }
         
         subscribeTaskAssignments();
+    } else if (user.role === 'worker') {
+        // Sin Supabase: renderizar con localStorage
+        renderWorkerTasks();
     }
 
     if (user.role === 'worker') {
@@ -803,6 +808,8 @@ async function loadData() {
     const savedSync = localStorage.getItem('ia_pendingSync');
 
     AppState.catalog = savedCatalog ? JSON.parse(savedCatalog) : initialCatalog;
+    // Siempre arrancamos con tareas vacías — se cargan frescas desde Supabase al iniciar sesión
+    // Esto evita que queden tareas sin campo "bloque" del localStorage viejo
     AppState.todayTasks = savedTasks ? JSON.parse(savedTasks) : [];
     AppState.counts = savedCounts ? JSON.parse(savedCounts) : [];
     AppState.history = savedHistory ? JSON.parse(savedHistory) : [];
@@ -958,7 +965,19 @@ function switchRole(role) {
         updateAdminDashboard();
         renderAdminHistory();
     } else {
-        renderWorkerTasks();
+        // Para workers: mostrar pantalla de carga mientras llegan las tareas de Supabase
+        // renderWorkerTasks() se llamará después desde fetchLatestTasks()
+        const list = document.getElementById('worker-task-list');
+        const emptyState = document.getElementById('worker-empty-state');
+        if (list) {
+            list.classList.remove('hidden');
+            list.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:2rem;opacity:0.6;">
+                <i data-lucide="loader" style="width:32px;height:32px;margin-bottom:8px;"></i>
+                <p>Cargando tareas...</p>
+            </div>`;
+            lucide.createIcons();
+        }
+        if (emptyState) emptyState.classList.add('hidden');
     }
 }
 
@@ -1014,7 +1033,15 @@ function handleExcelUpload(event) {
                 if (kl.includes('emb')) embalaje = row[k];
                 if (kl.includes('inv') || kl.includes('cant') || kl.includes('stock')) cantidad = row[k];
                 if (kl.includes('vlr') || kl.includes('val') || kl.includes('prec') || kl.includes('iva')) precio = row[k];
-                if (kl.includes('bloque') || kl.includes('block') || kl.includes('zona') || kl.includes('pasillo')) bloque = String(row[k] || '').trim();
+                if (kl.includes('bloque') || kl.includes('block') || kl.includes('zona') || kl.includes('pasillo')) {
+                    const rawBloque = String(row[k] || '').trim();
+                    // Si el valor es un número puro (ej: "1", "2", "4"), convertir a "Bloque 1", "Bloque 2", etc.
+                    if (rawBloque !== '' && /^\d+$/.test(rawBloque)) {
+                        bloque = 'Bloque ' + rawBloque;
+                    } else {
+                        bloque = rawBloque;
+                    }
+                }
             });
 
             if (codigo && nombre) {
@@ -1047,16 +1074,18 @@ function handleExcelUpload(event) {
         const tieneBloques = newItems.some(i => i.bloque && i.bloque.trim() !== '');
 
         if (newItems.length > 0) {
-            AppState.catalog = [...AppState.catalog, ...newItems].filter((v,i,a)=>a.findIndex(v2=>(v2.code===v.code))===i);
+            // Merge catálogo: los items nuevos (con bloque) tienen prioridad sobre los viejos
+            const existingWithoutNew = AppState.catalog.filter(v => !newItems.find(n => n.code === v.code));
+            AppState.catalog = [...existingWithoutNew, ...newItems];
             AppState.todayTasks = newItems;
             AppState.counts = [];
             saveData();
             renderAdminCatalog('all');
             if (tieneBloques) {
                 const bloquesList = [...new Set(newItems.map(i => i.bloque).filter(Boolean))].sort();
-                showToast(`¡Excel cargado! ${newItems.length} productos en ${bloquesList.length} bloques: ${bloquesList.join(', ')}`, 'success');
+                showToast(`¡Excel cargado! ${newItems.length} productos en ${bloquesList.length} bloques: ${bloquesList.join(', ')}. Haz clic en Publicar para enviar a los workers.`, 'success');
             } else {
-                showToast(`¡Excel cargado! ${newItems.length} productos. Sin columna "Bloque" — asígnalos manualmente en la tabla.`, 'success');
+                showToast(`¡Excel cargado! ${newItems.length} productos. Sin columna "Bloque" — asígnalos manualmente en la tabla y luego Publicar.`, 'success');
             }
         } else {
             showToast('No se encontraron columnas de "Código" y "Nombre" en el archivo.', 'danger');
