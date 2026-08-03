@@ -22,7 +22,8 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
-let supabaseAvailable = true;
+let pollingInterval = null;      // polling para workers cuando realtime falla
+let lastTaskTimestamp = null;    // timestamp de la última tarea recibida
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
 const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando login local y acceso anónimo para datos.
 const USE_SUPABASE_PRODUCTS = false; // Si el admin sube todo con Excel, no necesitamos tabla products.
@@ -176,6 +177,8 @@ function handleOnline() {
     if (USE_SUPABASE && supabaseClient) {
         syncPendingData();
         if (!taskSubscription) subscribeTaskAssignments();
+        // Recargar tareas frescas al recuperar conexión
+        fetchLatestTasks();
     }
 }
 
@@ -319,6 +322,8 @@ window.logout = async function() {
     AppState.currentUserName = '';
     AppState.currentUserEmail = '';
     AppState.currentBloque = null;
+    stopWorkerPolling();
+    taskSubscription = null;
     document.querySelector('.app-container').style.display = 'none';
     showLoginScreen();
     showToast('Sesión cerrada correctamente.', 'success');
@@ -656,22 +661,22 @@ async function fetchLatestTasks() {
         }
         return;
     }
-    if (data?.length > 0) {
-        const latest = data[0];
-        if (Array.isArray(latest.payload)) {
-            AppState.todayTasks = latest.payload.map(task => ({ ...task }));
-            saveData();
-            // Log diagnóstico para workers
-            if (AppState.currentRole === 'worker') {
-                const miBloque = AppState.currentBloque;
-                const misProductos = AppState.todayTasks.filter(t => (t.bloque||'').trim() === (miBloque||'').trim());
-                console.log(`👷 Worker [${AppState.currentUserEmail}] bloque: "${miBloque}" | Total tareas: ${AppState.todayTasks.length} | Mis productos: ${misProductos.length}`);
-                renderWorkerTasks();
-            }
+    if (data?.length > 0 && Array.isArray(data[0].payload)) {
+        AppState.todayTasks = data[0].payload.map(task => ({ ...task }));
+        lastTaskTimestamp = data[0].created_at; // guardar para el polling
+        saveData();
+        if (AppState.currentRole === 'worker') {
+            const miBloque = AppState.currentBloque;
+            const misProductos = AppState.todayTasks.filter(t => (t.bloque||'').trim() === (miBloque||'').trim());
+            console.log(`👷 Worker [${AppState.currentUserEmail}] bloque: "${miBloque}" | Total tareas: ${AppState.todayTasks.length} | Mis productos: ${misProductos.length}`);
+            renderWorkerTasks();
         }
+    } else if (data?.length === 0) {
+        AppState.todayTasks = [];
+        saveData();
+        if (AppState.currentRole === 'worker') renderWorkerTasks();
     }
-    
-    // Cargar conteos del worker en tiempo real
+
     if (AppState.currentRole === 'admin') {
         await fetchWorkerCounts();
     }
@@ -686,11 +691,9 @@ function subscribeTaskAssignments() {
     };
     
     const refreshCounts = payload => {
-        // Cargar todos los conteos desde worker_counts
         if (AppState.currentRole === 'admin') {
             fetchWorkerCounts();
         } else if (AppState.currentRole === 'worker') {
-            // Worker carga solo sus conteos
             fetchWorkerCountsForCurrentUser();
         }
     };
@@ -702,11 +705,52 @@ function subscribeTaskAssignments() {
             console.log('Task subscription status:', status);
         });
     
-    // Suscribirse a cambios en worker_counts para admin y worker
     supabaseClient.channel('public:worker_counts')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .subscribe();
+
+    // Polling de respaldo para workers: cada 10 segundos verifica si hay tareas nuevas
+    // Esto garantiza que aunque Realtime falle, el worker siempre recibe las tareas
+    if (AppState.currentRole === 'worker') {
+        startWorkerPolling();
+    }
+}
+
+function startWorkerPolling() {
+    if (pollingInterval) return; // ya está corriendo
+    console.log('🔄 Polling iniciado para worker cada 10s');
+    pollingInterval = setInterval(async () => {
+        if (!AppState.loggedIn || AppState.currentRole !== 'worker') {
+            stopWorkerPolling();
+            return;
+        }
+        if (!navigator.onLine || !supabaseClient) return;
+
+        // Solo descarga si hay algo nuevo (compara created_at de la última fila)
+        const { data, error } = await supabaseClient
+            .from(SUPABASE_TASKS_TABLE)
+            .select('created_at')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (error || !data?.length) return;
+
+        const latest = data[0].created_at;
+        if (latest !== lastTaskTimestamp) {
+            console.log('🔄 Nuevas tareas detectadas por polling, descargando...');
+            lastTaskTimestamp = latest;
+            await fetchLatestTasks();
+        }
+    }, 10000); // cada 10 segundos
+}
+
+function stopWorkerPolling() {
+    if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+        console.log('⏹ Polling detenido');
+    }
 }
 
 function refreshTasksState(newRow) {
@@ -1862,6 +1906,16 @@ function generateExcel(records, dateFile) {
 
 function handleWorkerSearch() {
     renderWorkerTasks();
+}
+
+async function recargarTareasWorker() {
+    showToast('Recargando tareas...', 'info');
+    if (USE_SUPABASE && supabaseClient) {
+        await fetchLatestTasks();
+        await fetchWorkerCountsForCurrentUser();
+    } else {
+        renderWorkerTasks();
+    }
 }
 
 function renderWorkerTasks() {
