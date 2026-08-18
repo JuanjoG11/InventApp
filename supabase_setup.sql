@@ -5,9 +5,8 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 2) Tabla de tareas asignadas (admin -> trabajador)
---    id es TEXT para poder usar 'current-tasks' como fila única (upsert)
 CREATE TABLE IF NOT EXISTS public.task_assignments (
-  id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   published_by uuid,
   published_by_email text,
   status text DEFAULT 'active',
@@ -92,6 +91,11 @@ CREATE TABLE IF NOT EXISTS public.inventory_history (
 
 ALTER TABLE public.inventory_history ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "public_select_history" ON public.inventory_history;
+CREATE POLICY "public_select_history" ON public.inventory_history
+  FOR SELECT
+  USING (true);
+
 DROP POLICY IF EXISTS "public_insert_history" ON public.inventory_history;
 CREATE POLICY "public_insert_history" ON public.inventory_history
   FOR INSERT
@@ -116,13 +120,4 @@ CREATE POLICY "anon_delete_worker_counts" ON public.worker_counts
 --  * Las tablas task_assignments, worker_counts e inventory_history son suficientes.
 --  * Mantén USE_SUPABASE_AUTH = false en app.js.
 --  * Usa HTTPS y el URL/anon key correctos de Supabase.
-
--- ============================================================
--- MIGRACIÓN: Si task_assignments ya existe con id uuid,
--- ejecuta esto para convertirla a text y permitir upsert con 'current-tasks':
--- ============================================================
--- ALTER TABLE public.task_assignments ALTER COLUMN id TYPE text USING id::text;
--- ALTER TABLE public.task_assignments ALTER COLUMN id SET DEFAULT gen_random_uuid()::text;
--- DELETE FROM public.task_assignments; -- limpiar filas viejas (opcional)
--- ============================================================
 

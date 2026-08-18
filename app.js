@@ -8,7 +8,6 @@ const AppState = {
     currentUserId: null,
     currentUserName: null,
     currentUserEmail: null,
-    currentBloque: null,  // bloque asignado al worker actual
     catalog: [],
     todayTasks: [],
     counts: [],
@@ -22,8 +21,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
-let pollingInterval = null;      // polling para workers cuando realtime falla
-let lastTaskTimestamp = null;    // timestamp de la última tarea recibida
+let supabaseAvailable = true;
 const USE_SUPABASE = SUPABASE_URL !== '<YOUR_SUPABASE_URL>' && SUPABASE_ANON_KEY !== '<YOUR_SUPABASE_ANON_KEY>';
 const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando login local y acceso anónimo para datos.
 const USE_SUPABASE_PRODUCTS = false; // Si el admin sube todo con Excel, no necesitamos tabla products.
@@ -99,8 +97,7 @@ function saveLocalSession() {
         currentRole: AppState.currentRole,
         currentUserId: AppState.currentUserId,
         currentUserName: AppState.currentUserName,
-        currentUserEmail: AppState.currentUserEmail,
-        currentBloque: AppState.currentBloque || null
+        currentUserEmail: AppState.currentUserEmail
     };
     localStorage.setItem('ia_session', JSON.stringify(sessionData));
 }
@@ -122,7 +119,6 @@ async function restoreLocalSession() {
         AppState.currentUserId = sessionData.currentUserId || null;
         AppState.currentUserName = sessionData.currentUserName || sessionData.currentUserEmail || (sessionData.currentRole === 'admin' ? 'Administrador' : 'Trabajador');
         AppState.currentUserEmail = sessionData.currentUserEmail || '';
-        AppState.currentBloque = sessionData.currentBloque || null;
 
         updateRoleSwitcherVisibility(AppState.currentRole);
         document.getElementById('login-screen').style.display = 'none';
@@ -131,7 +127,7 @@ async function restoreLocalSession() {
         updateUserDisplay();
 
         if (USE_SUPABASE && supabaseClient) {
-            // Cargar tareas primero (fetchLatestTasks llama renderWorkerTasks al final)
+            // Cargar tareas primero
             await fetchLatestTasks();
             
             // Luego, si es worker, cargar sus conteos
@@ -140,9 +136,6 @@ async function restoreLocalSession() {
             }
             
             subscribeTaskAssignments();
-        } else if (AppState.currentRole === 'worker') {
-            // Sin Supabase: renderizar con lo que hay en localStorage
-            renderWorkerTasks();
         }
 
         if (AppState.currentRole === 'worker') {
@@ -177,8 +170,6 @@ function handleOnline() {
     if (USE_SUPABASE && supabaseClient) {
         syncPendingData();
         if (!taskSubscription) subscribeTaskAssignments();
-        // Recargar tareas frescas al recuperar conexión
-        fetchLatestTasks();
     }
 }
 
@@ -321,9 +312,6 @@ window.logout = async function() {
     AppState.currentUserId = null;
     AppState.currentUserName = '';
     AppState.currentUserEmail = '';
-    AppState.currentBloque = null;
-    stopWorkerPolling();
-    taskSubscription = null;
     document.querySelector('.app-container').style.display = 'none';
     showLoginScreen();
     showToast('Sesión cerrada correctamente.', 'success');
@@ -399,20 +387,8 @@ async function handleLogin(event) {
 
 async function fallbackLocalLogin(email, password) {
     const localUsers = {
-        // --- ADMIN ---
         'anyi.mosquera@dechss.com': { password: 'Admin123!', role: 'admin', name: 'Anyi Mosquera' },
-        // --- WORKERS (cada uno tiene un bloque asignado) ---
-        // El campo "bloque" debe coincidir exactamente con el nombre de bloque en las tareas
-        'quebin.lotero@dechss.com':    { password: 'Worker123!', role: 'worker', name: 'Quebin Lotero',    bloque: 'Bloque 1' },
-        'worker2@dechss.com':          { password: 'Worker2!',   role: 'worker', name: 'Worker 2',         bloque: 'Bloque 2' },
-        'worker3@dechss.com':          { password: 'Worker3!',   role: 'worker', name: 'Worker 3',         bloque: 'Bloque 3' },
-        'worker4@dechss.com':          { password: 'Worker4!',   role: 'worker', name: 'Worker 4',         bloque: 'Bloque 4' },
-        'worker5@dechss.com':          { password: 'Worker5!',   role: 'worker', name: 'Worker 5',         bloque: 'Bloque 5' },
-        'worker6@dechss.com':          { password: 'Worker6!',   role: 'worker', name: 'Worker 6',         bloque: 'Bloque 6' },
-        'worker7@dechss.com':          { password: 'Worker7!',   role: 'worker', name: 'Worker 7',         bloque: 'Bloque 7' },
-        'worker8@dechss.com':          { password: 'Worker8!',   role: 'worker', name: 'Worker 8',         bloque: 'Bloque 8' },
-        'worker9@dechss.com':          { password: 'Worker9!',   role: 'worker', name: 'Worker 9',         bloque: 'Bloque 9' },
-        'worker10@dechss.com':         { password: 'Worker10!',  role: 'worker', name: 'Worker 10',        bloque: 'Bloque 10' },
+        'quebin.lotero@dechss.com': { password: 'Worker123!', role: 'worker', name: 'Quebin Lotero' }
     };
 
     const user = localUsers[email?.toLowerCase()];
@@ -424,7 +400,6 @@ async function fallbackLocalLogin(email, password) {
     AppState.currentUserId = null;
     AppState.currentUserName = user.name || (user.role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = email;
-    AppState.currentBloque = user.bloque || null; // bloque asignado al worker
     updateRoleSwitcherVisibility(user.role);
 
     document.getElementById('login-screen').style.display = 'none';
@@ -434,17 +409,15 @@ async function fallbackLocalLogin(email, password) {
     saveLocalSession();
 
     if (USE_SUPABASE && supabaseClient) {
-        // fetchLatestTasks llama renderWorkerTasks al terminar
+        // Cargar tareas primero
         await fetchLatestTasks();
         
+        // Luego, si es worker, cargar sus conteos
         if (user.role === 'worker') {
             await fetchWorkerCountsForCurrentUser();
         }
         
         subscribeTaskAssignments();
-    } else if (user.role === 'worker') {
-        // Sin Supabase: renderizar con localStorage
-        renderWorkerTasks();
     }
 
     if (user.role === 'worker') {
@@ -491,10 +464,7 @@ function updateUserDisplay() {
         if (emailEl) emailEl.textContent = AppState.currentUserEmail || '';
         if (workerWelcome) {
             if (AppState.currentRole === 'worker') {
-                const bloqueTag = AppState.currentBloque
-                    ? ` <span style="font-size:0.75rem;background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b;padding:2px 8px;border-radius:12px;vertical-align:middle;">${AppState.currentBloque}</span>`
-                    : '';
-                workerWelcome.innerHTML = `¡Hola, ${AppState.currentUserName || 'Auxiliar'}!${bloqueTag}`;
+                workerWelcome.textContent = `¡Hola, ${AppState.currentUserName || 'Auxiliar'}!`;
             } else {
                 workerWelcome.textContent = '';
             }
@@ -661,24 +631,19 @@ async function fetchLatestTasks() {
         }
         return;
     }
-    if (data?.length > 0 && Array.isArray(data[0].payload)) {
-        AppState.todayTasks = data[0].payload.map(task => ({ ...task }));
-        lastTaskTimestamp = data[0].created_at; // guardar para el polling
-        saveData();
-        if (AppState.currentRole === 'worker') {
-            const miBloque = AppState.currentBloque;
-            const misProductos = AppState.todayTasks.filter(t => (t.bloque||'').trim() === (miBloque||'').trim());
-            console.log(`👷 Worker [${AppState.currentUserEmail}] bloque: "${miBloque}" | Total tareas: ${AppState.todayTasks.length} | Mis productos: ${misProductos.length}`);
-            renderWorkerTasks();
+    if (data?.length > 0) {
+        const latest = data[0];
+        if (Array.isArray(latest.payload)) {
+            AppState.todayTasks = latest.payload.map(task => ({ ...task }));
+            saveData();
+            if (AppState.currentRole === 'worker') renderWorkerTasks();
         }
-    } else if (data?.length === 0) {
-        AppState.todayTasks = [];
-        saveData();
-        if (AppState.currentRole === 'worker') renderWorkerTasks();
     }
-
+    
+    // Cargar conteos del worker en tiempo real
     if (AppState.currentRole === 'admin') {
         await fetchWorkerCounts();
+        await fetchHistoryFromSupabase();
     }
 }
 
@@ -691,9 +656,11 @@ function subscribeTaskAssignments() {
     };
     
     const refreshCounts = payload => {
+        // Cargar todos los conteos desde worker_counts
         if (AppState.currentRole === 'admin') {
             fetchWorkerCounts();
         } else if (AppState.currentRole === 'worker') {
+            // Worker carga solo sus conteos
             fetchWorkerCountsForCurrentUser();
         }
     };
@@ -705,52 +672,11 @@ function subscribeTaskAssignments() {
             console.log('Task subscription status:', status);
         });
     
+    // Suscribirse a cambios en worker_counts para admin y worker
     supabaseClient.channel('public:worker_counts')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .subscribe();
-
-    // Polling de respaldo para workers: cada 10 segundos verifica si hay tareas nuevas
-    // Esto garantiza que aunque Realtime falle, el worker siempre recibe las tareas
-    if (AppState.currentRole === 'worker') {
-        startWorkerPolling();
-    }
-}
-
-function startWorkerPolling() {
-    if (pollingInterval) return; // ya está corriendo
-    console.log('🔄 Polling iniciado para worker cada 10s');
-    pollingInterval = setInterval(async () => {
-        if (!AppState.loggedIn || AppState.currentRole !== 'worker') {
-            stopWorkerPolling();
-            return;
-        }
-        if (!navigator.onLine || !supabaseClient) return;
-
-        // Solo descarga si hay algo nuevo (compara created_at de la última fila)
-        const { data, error } = await supabaseClient
-            .from(SUPABASE_TASKS_TABLE)
-            .select('created_at')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-        if (error || !data?.length) return;
-
-        const latest = data[0].created_at;
-        if (latest !== lastTaskTimestamp) {
-            console.log('🔄 Nuevas tareas detectadas por polling, descargando...');
-            lastTaskTimestamp = latest;
-            await fetchLatestTasks();
-        }
-    }, 10000); // cada 10 segundos
-}
-
-function stopWorkerPolling() {
-    if (pollingInterval) {
-        clearInterval(pollingInterval);
-        pollingInterval = null;
-        console.log('⏹ Polling detenido');
-    }
 }
 
 function refreshTasksState(newRow) {
@@ -776,8 +702,7 @@ async function syncCountsToSupabase() {
             cajas: count.cajas,
             unidades: count.unidades,
             averias: count.averias,
-            item: count.item,
-            bloque: count.item.bloque || ''
+            item: count.item
         }], { onConflict: 'task_id,worker_email' });
         
         if (error) {
@@ -852,8 +777,6 @@ async function loadData() {
     const savedSync = localStorage.getItem('ia_pendingSync');
 
     AppState.catalog = savedCatalog ? JSON.parse(savedCatalog) : initialCatalog;
-    // Siempre arrancamos con tareas vacías — se cargan frescas desde Supabase al iniciar sesión
-    // Esto evita que queden tareas sin campo "bloque" del localStorage viejo
     AppState.todayTasks = savedTasks ? JSON.parse(savedTasks) : [];
     AppState.counts = savedCounts ? JSON.parse(savedCounts) : [];
     AppState.history = savedHistory ? JSON.parse(savedHistory) : [];
@@ -875,6 +798,44 @@ function saveData() {
     localStorage.setItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
     
     if (AppState.currentRole === 'admin') updateAdminDashboard();
+}
+
+async function fetchHistoryFromSupabase() {
+    if (!supabaseClient || !navigator.onLine) return;
+    const { data, error } = await supabaseClient
+        .from('inventory_history')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(500);
+    if (error) {
+        // Si es error de permisos (RLS), usar historial local silenciosamente
+        if (error.code === '42501' || error.status === 401 || error.code === 'PGRST301') {
+            console.warn('Sin permiso para leer historial de Supabase. Usando historial local. Ejecuta el SQL de supabase_setup.sql para habilitar SELECT en inventory_history.');
+            return;
+        }
+        console.warn('Error cargando historial desde Supabase:', error);
+        return;
+    }
+    if (data && data.length > 0) {
+        AppState.history = data.map(r => ({
+            date: r.date,
+            name: r.product_name,
+            code: r.product_code || '',
+            provider: r.provider || '',
+            embalaje: r.embalaje || 1,
+            precio: r.precio || 0,
+            expectedStock: r.expected_stock || 0,
+            cajas: r.cajas || 0,
+            unidades: r.unidades || 0,
+            totalContado: r.total_contado || 0,
+            diffUds: r.diff_uds || 0,
+            diffValorRaw: r.diff_valor_raw || 0,
+            descuadreFormateado: r.descuadre_formateado || '-',
+            averias: r.averias || 0
+        }));
+        saveData();
+        renderAdminHistory();
+    }
 }
 
 async function pushHistoryToSupabase(records) {
@@ -1009,19 +970,7 @@ function switchRole(role) {
         updateAdminDashboard();
         renderAdminHistory();
     } else {
-        // Para workers: mostrar pantalla de carga mientras llegan las tareas de Supabase
-        // renderWorkerTasks() se llamará después desde fetchLatestTasks()
-        const list = document.getElementById('worker-task-list');
-        const emptyState = document.getElementById('worker-empty-state');
-        if (list) {
-            list.classList.remove('hidden');
-            list.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:2rem;opacity:0.6;">
-                <i data-lucide="loader" style="width:32px;height:32px;margin-bottom:8px;"></i>
-                <p>Cargando tareas...</p>
-            </div>`;
-            lucide.createIcons();
-        }
-        if (emptyState) emptyState.classList.add('hidden');
+        renderWorkerTasks();
     }
 }
 
@@ -1068,7 +1017,6 @@ function handleExcelUpload(event) {
             let embalaje = 1;
             let cantidad = 0;
             let precio = 0;
-            let bloque = '';
 
             keys.forEach(k => {
                 const kl = k.toLowerCase();
@@ -1077,15 +1025,6 @@ function handleExcelUpload(event) {
                 if (kl.includes('emb')) embalaje = row[k];
                 if (kl.includes('inv') || kl.includes('cant') || kl.includes('stock')) cantidad = row[k];
                 if (kl.includes('vlr') || kl.includes('val') || kl.includes('prec') || kl.includes('iva')) precio = row[k];
-                if (kl.includes('bloque') || kl.includes('block') || kl.includes('zona') || kl.includes('pasillo')) {
-                    const rawBloque = String(row[k] || '').trim();
-                    // Si el valor es un número puro (ej: "1", "2", "4"), convertir a "Bloque 1", "Bloque 2", etc.
-                    if (rawBloque !== '' && /^\d+$/.test(rawBloque)) {
-                        bloque = 'Bloque ' + rawBloque;
-                    } else {
-                        bloque = rawBloque;
-                    }
-                }
             });
 
             if (codigo && nombre) {
@@ -1107,30 +1046,22 @@ function handleExcelUpload(event) {
                         embalaje: embVal,
                         expectedStock: stockVal,
                         precio: priceVal,
-                        provider: selectedProvider,
-                        bloque: bloque || ''
+                        provider: selectedProvider
                     };
                 }
             }
         });
 
         newItems = Object.values(itemsMap);
-        const tieneBloques = newItems.some(i => i.bloque && i.bloque.trim() !== '');
 
         if (newItems.length > 0) {
-            // Merge catálogo: los items nuevos (con bloque) tienen prioridad sobre los viejos
-            const existingWithoutNew = AppState.catalog.filter(v => !newItems.find(n => n.code === v.code));
-            AppState.catalog = [...existingWithoutNew, ...newItems];
-            AppState.todayTasks = newItems;
-            AppState.counts = [];
+            // Al subir un excel, reemplazamos las tareas de hoy por lo subido
+            AppState.catalog = [...AppState.catalog, ...newItems].filter((v,i,a)=>a.findIndex(v2=>(v2.code===v.code))===i); // merge unique
+            AppState.todayTasks = newItems; // Se asigna automáticamente para hoy
+            AppState.counts = []; // Reiniciamos los conteos si hay carga masiva nueva
             saveData();
             renderAdminCatalog('all');
-            if (tieneBloques) {
-                const bloquesList = [...new Set(newItems.map(i => i.bloque).filter(Boolean))].sort();
-                showToast(`¡Excel cargado! ${newItems.length} productos en ${bloquesList.length} bloques: ${bloquesList.join(', ')}. Haz clic en Publicar para enviar a los workers.`, 'success');
-            } else {
-                showToast(`¡Excel cargado! ${newItems.length} productos. Sin columna "Bloque" — asígnalos manualmente en la tabla y luego Publicar.`, 'success');
-            }
+            showToast(`¡Excel cargado! Se han consolidado y asignado ${newItems.length} productos únicos para contar hoy.`, 'success');
         } else {
             showToast('No se encontraron columnas de "Código" y "Nombre" en el archivo.', 'danger');
         }
@@ -1150,12 +1081,6 @@ function renderAdminCatalog(providerFilter) {
 
         const isAssigned = AppState.todayTasks.some(t => t.id === item.id);
 
-        // Opciones de bloque para el select
-        const bloqueOptions = ['', 'Bloque 1','Bloque 2','Bloque 3','Bloque 4','Bloque 5',
-                               'Bloque 6','Bloque 7','Bloque 8','Bloque 9','Bloque 10']
-            .map(b => `<option value="${b}" ${(item.bloque||'')=== b ? 'selected':''}>${b||'— Sin bloque —'}</option>`)
-            .join('');
-
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>
@@ -1168,12 +1093,6 @@ function renderAdminCatalog(providerFilter) {
                 <span class="product-code-tag">${item.code}</span>
             </td>
             <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
-            <td>
-                <select class="input-form bloque-select" style="padding:4px 8px;font-size:0.8rem;height:32px;"
-                    onchange="setItemBloque('${item.id}', this.value)">
-                    ${bloqueOptions}
-                </select>
-            </td>
             <td class="action-cell">
                 ${isAssigned ? `<button type="button" class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
             </td>
@@ -1181,15 +1100,6 @@ function renderAdminCatalog(providerFilter) {
         tbody.appendChild(tr);
     });
     lucide.createIcons();
-}
-
-// Asigna o cambia el bloque de un producto del catálogo y de las tareas de hoy
-function setItemBloque(itemId, bloque) {
-    const catItem = AppState.catalog.find(i => i.id === itemId);
-    if (catItem) catItem.bloque = bloque;
-    const taskItem = AppState.todayTasks.find(i => i.id === itemId);
-    if (taskItem) taskItem.bloque = bloque;
-    saveData();
 }
 
 function filterCatalogByProvider(provider, event) {
@@ -1280,22 +1190,6 @@ async function publishDailyTask() {
         showToast('Debes seleccionar productos para publicar.', 'danger');
         return;
     }
-
-    // Verificar que los productos tengan bloques asignados
-    const sinBloque = AppState.todayTasks.filter(t => !t.bloque || t.bloque.trim() === '').length;
-    if (sinBloque > 0) {
-        showToast(`⚠️ ${sinBloque} productos sin bloque asignado. Los workers solo verán los de su bloque. Asigna bloques en la tabla antes de publicar.`, 'warning');
-        // No bloqueamos — puede publicar igual si quiere
-    }
-
-    // Log de diagnóstico: mostrar en consola qué bloques van en el payload
-    const bloqueMap = {};
-    AppState.todayTasks.forEach(t => {
-        const b = t.bloque || '(sin bloque)';
-        bloqueMap[b] = (bloqueMap[b] || 0) + 1;
-    });
-    console.log('📦 Publicando tareas con bloques:', bloqueMap);
-
     AppState.counts = [];
     saveData();
 
@@ -1309,8 +1203,7 @@ async function publishDailyTask() {
         }
     }
 
-    const bloqueResumen = Object.entries(bloqueMap).map(([b,n]) => `${b}: ${n}`).join(' | ');
-    showToast(`✅ Publicado: ${AppState.todayTasks.length} productos. ${bloqueResumen}`, 'success');
+    showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
 }
 
 function updateAdminDashboard() {
@@ -1329,17 +1222,8 @@ function updateAdminDashboard() {
     monitorTbody.innerHTML = '';
 
     if(AppState.todayTasks.length === 0) {
-        monitorTbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
+        monitorTbody.innerHTML = '<tr><td colspan="6" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
     }
-
-    // Agrupar conteos por bloque para el resumen visual
-    const bloqueProgress = {};
-    AppState.todayTasks.forEach(t => {
-        const b = t.bloque || '— Sin bloque —';
-        if (!bloqueProgress[b]) bloqueProgress[b] = { total: 0, counted: 0 };
-        bloqueProgress[b].total++;
-        if (AppState.counts.find(c => c.item.id === t.id)) bloqueProgress[b].counted++;
-    });
 
     AppState.counts.forEach(countInfo => {
         totalAverias += parseInt(countInfo.averias) || 0;
@@ -1369,7 +1253,6 @@ function updateAdminDashboard() {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><strong>${countInfo.item.name}</strong><br><span style="font-size:0.75rem">${countInfo.item.code}</span></td>
-            <td><span style="font-size:0.78rem;opacity:0.8">${countInfo.item.bloque || '—'}</span></td>
             <td>${emb}</td>
             <td>${expected}</td>
             <td><strong>${totalContado}</strong> ${diffHtml}</td>
@@ -1398,37 +1281,6 @@ function updateAdminDashboard() {
     if (averiasEl) {
         averiasEl.textContent = totalAverias;
     }
-
-    // Resumen de bloques: mostrar progreso por bloque en el monitor
-    let bloqueBarEl = document.getElementById('monitor-bloques-summary');
-    if (!bloqueBarEl) {
-        bloqueBarEl = document.createElement('div');
-        bloqueBarEl.id = 'monitor-bloques-summary';
-        bloqueBarEl.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;margin-bottom:4px;';
-        // Insertar justo antes de la tabla del monitor (siempre está en el DOM aunque la pestaña esté oculta)
-        const tablaWrapper = document.getElementById('live-detail-table-body')?.closest('.table-responsive');
-        if (tablaWrapper) tablaWrapper.parentNode.insertBefore(bloqueBarEl, tablaWrapper);
-    }
-    bloqueBarEl.innerHTML = '';
-    Object.entries(bloqueProgress).sort(([a],[b])=>a.localeCompare(b)).forEach(([bloque, prog]) => {
-        const pct = prog.total > 0 ? Math.round((prog.counted / prog.total) * 100) : 0;
-        const done = pct === 100;
-        const color = done ? '#059669' : pct > 0 ? '#f59e0b' : '#6b7280';
-
-        const chip = document.createElement('div');
-        chip.style.cssText = `display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:20px;font-size:0.78rem;font-weight:600;background:${color}22;border:1px solid ${color};color:${color};`;
-        chip.innerHTML = `<span>${bloque}</span><span>${prog.counted}/${prog.total}</span>`;
-
-        if (done) {
-            const btn = document.createElement('button');
-            btn.textContent = '📄 Finalizar';
-            btn.style.cssText = `margin-left:4px;padding:2px 10px;border-radius:12px;background:${color};color:#fff;border:none;cursor:pointer;font-size:0.72rem;font-weight:700;`;
-            btn.addEventListener('click', () => finishBloque(bloque));
-            chip.appendChild(btn);
-        }
-
-        bloqueBarEl.appendChild(chip);
-    });
 }
 
 function renderAdminHistory() {
@@ -1535,96 +1387,6 @@ function clearAllHistory() {
         showToast('Historial borrado', 'success');
     }
 }
-
-// Finalizar un bloque específico: genera PDF/Excel solo con ese bloque y lo elimina de las tareas activas
-window.finishBloque = async function(bloque) {
-    const bloqueItems = AppState.todayTasks.filter(t => (t.bloque || '').trim() === bloque.trim());
-    if (bloqueItems.length === 0) {
-        showToast(`No hay productos en ${bloque}.`, 'danger');
-        return;
-    }
-
-    const sinContar = bloqueItems.filter(t => !AppState.counts.find(c => c.item.id === t.id));
-    if (sinContar.length > 0) {
-        if (!confirm(`${bloque}: faltan ${sinContar.length} producto(s) sin contar. ¿Finalizar igual?`)) return;
-    } else {
-        if (!confirm(`¿Finalizar ${bloque} y generar PDF/Excel?`)) return;
-    }
-
-    const dateStr = new Date().toLocaleDateString('es-CO');
-    const dateFile = new Date().toISOString().slice(0, 10);
-    const bloqueSlug = bloque.replace(/\s+/g, '_');
-
-    const bloqueRecords = bloqueItems.map(item => {
-        const countEntry = AppState.counts.find(c => c.item.id === item.id);
-        const cajas = countEntry ? parseInt(countEntry.cajas) || 0 : 0;
-        const unidades = countEntry ? parseInt(countEntry.unidades) || 0 : 0;
-        const averias = countEntry ? parseInt(countEntry.averias) || 0 : 0;
-        const emb = item.embalaje || 1;
-        const totalContado = (cajas * emb) + unidades;
-        const diff = totalContado - (item.expectedStock || 0);
-        const diffValor = diff * (item.precio || 0);
-        const fmtVal = diffValor !== 0
-            ? new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor)
-            : '-';
-
-        const record = {
-            date: dateStr,
-            name: item.name,
-            code: item.code,
-            provider: item.provider,
-            bloque: item.bloque || '',
-            embalaje: emb,
-            precio: item.precio || 0,
-            expectedStock: item.expectedStock || 0,
-            cajas,
-            unidades,
-            totalContado,
-            diffUds: diff,
-            diffValorRaw: diffValor,
-            descuadreFormateado: fmtVal,
-            averias
-        };
-        AppState.history.push(record);
-        return record;
-    });
-
-    // Generar PDF y Excel solo con este bloque
-    try {
-        generatePDF(bloqueRecords, dateStr, `${dateFile}_${bloqueSlug}`);
-    } catch (e) {
-        console.warn('Error generando PDF de bloque:', e);
-        showToast('Error al generar PDF. Revisa la consola.', 'danger');
-    }
-    await generateExcel(bloqueRecords, `${dateFile}_${bloqueSlug}`);
-
-    if (USE_SUPABASE) {
-        await pushHistoryToSupabase(bloqueRecords);
-    }
-
-    // Eliminar este bloque de las tareas activas y sus conteos
-    const idsBloque = new Set(bloqueItems.map(i => i.id));
-    AppState.todayTasks = AppState.todayTasks.filter(t => !idsBloque.has(t.id));
-    AppState.counts = AppState.counts.filter(c => !idsBloque.has(c.item.id));
-    saveData();
-
-    // Sincronizar tareas actualizadas a Supabase para que los workers vean solo lo pendiente
-    if (USE_SUPABASE && supabaseClient) {
-        await pushTasksToSupabase();
-        // Limpiar conteos de este bloque en Supabase
-        try {
-            for (const id of idsBloque) {
-                await supabaseClient.from('worker_counts').delete().eq('task_id', id);
-            }
-        } catch (e) {
-            console.warn('Error limpiando conteos del bloque en Supabase:', e);
-        }
-    }
-
-    updateAdminDashboard();
-    renderAdminHistory();
-    showToast(`✅ ${bloque} finalizado. PDF y Excel generados.`, 'success');
-};
 
 // Finalizar día: guardar en historial y generar PDF
 window.finishDay = async function() {
@@ -1908,46 +1670,16 @@ function handleWorkerSearch() {
     renderWorkerTasks();
 }
 
-async function recargarTareasWorker() {
-    showToast('Recargando tareas...', 'info');
-    if (USE_SUPABASE && supabaseClient) {
-        await fetchLatestTasks();
-        await fetchWorkerCountsForCurrentUser();
-    } else {
-        renderWorkerTasks();
-    }
-}
-
 function renderWorkerTasks() {
     const list = document.getElementById('worker-task-list');
     const emptyState = document.getElementById('worker-empty-state');
-
-    // Filtrar tareas por bloque del worker actual
-    const myBloque = AppState.currentBloque || null;
-    const myTasks = myBloque
-        ? AppState.todayTasks.filter(t => (t.bloque || '').trim() === myBloque.trim())
-        : AppState.todayTasks; // si no tiene bloque asignado ve todo (compatibilidad)
-
-    const myCounts = myBloque
-        ? AppState.counts.filter(c => (c.item.bloque || '').trim() === myBloque.trim())
-        : AppState.counts;
-
-    const pendingCount = myTasks.length - myCounts.length;
-    document.getElementById('w-stat-pending').textContent = Math.max(0, pendingCount);
-    document.getElementById('w-stat-completed').textContent = myCounts.length;
-
-    if (myTasks.length === 0) {
-        let msg = 'El administrador no ha publicado productos para contar hoy.';
-        if (AppState.todayTasks.length > 0 && myBloque) {
-            // Hay tareas pero ninguna tiene este bloque — posible causa: admin no asignó bloques o no republicó
-            const algunaTienBloque = AppState.todayTasks.some(t => t.bloque && t.bloque.trim() !== '');
-            if (!algunaTienBloque) {
-                msg = `Hay ${AppState.todayTasks.length} productos cargados pero sin bloques asignados. Pídele al administrador que asigne bloques y vuelva a publicar.`;
-            } else {
-                msg = `No hay productos en tu bloque (${myBloque}). Pídele al admin que verifique la asignación.`;
-            }
-        }
-        document.getElementById('worker-assigned-summary').textContent = msg;
+    
+    const pendingCount = AppState.todayTasks.length - AppState.counts.length;
+    document.getElementById('w-stat-pending').textContent = pendingCount;
+    document.getElementById('w-stat-completed').textContent = AppState.counts.length;
+    
+    if (AppState.todayTasks.length === 0) {
+        document.getElementById('worker-assigned-summary').textContent = 'No hay tareas cargadas.';
         list.classList.add('hidden');
         emptyState.classList.remove('hidden');
         return;
@@ -1956,7 +1688,7 @@ function renderWorkerTasks() {
     const searchInput = document.getElementById('worker-search');
     const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
 
-    const filteredTasks = myTasks.filter(task => {
+    const filteredTasks = AppState.todayTasks.filter(task => {
         if (!searchTerm) return true;
         return task.name.toLowerCase().includes(searchTerm) || task.code.toLowerCase().includes(searchTerm);
     });
@@ -1975,11 +1707,9 @@ function renderWorkerTasks() {
         return;
     }
 
-    // Mostrar bloque activo del worker en el resumen
-    const bloqueLabel = myBloque ? ` — ${myBloque}` : '';
-    document.getElementById('worker-assigned-summary').textContent = pendingCount <= 0
-        ? `¡Has terminado todo por hoy!${bloqueLabel}`
-        : `Tienes ${pendingCount} productos pendientes${bloqueLabel}`;
+    document.getElementById('worker-assigned-summary').textContent = pendingCount === 0 
+        ? '¡Has terminado todo por hoy!' 
+        : `Tienes ${pendingCount} productos pendientes por revisar.`;
 
     list.classList.remove('hidden');
     emptyState.classList.add('hidden');
