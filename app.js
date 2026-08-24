@@ -12,12 +12,12 @@ const AppState = {
     todayTasks: [],
     counts: [],
     history: [],
-    pendingSync: { tasks: [], history: [] },
+    pendingSync: { tasks: [], history: [], counts: [] },
     isOnline: true
 };
 
-const SUPABASE_URL = 'https://wfhyzlubzzkvnyztqjrt.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndmaHl6bHVienprdm55enRxanJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODc3NjAsImV4cCI6MjA5NDg2Mzc2MH0.znfgvmksGzAAGxPHMU6ePcevqI_XK4H9wTdM6qd9E98';
+const SUPABASE_URL = 'https://yvysbuirvpfcngviwybh.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl2eXNidWlydnBmY25ndml3eWJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1NzcyMDUsImV4cCI6MjEwMzE1MzIwNX0.Vpw_nLNXHKVDQu6GsKoRYpPKq4dV2QZ3gDj764RooFM';
 const SUPABASE_TASKS_TABLE = 'task_assignments';
 let supabaseClient = null;
 let taskSubscription = null;
@@ -228,8 +228,41 @@ async function syncPendingData() {
         }
     }
 
-    // Sincronizar conteos del trabajador si hay pendientes
-    if (AppState.currentRole === 'worker' && AppState.counts.length > 0) {
+    // Sincronizar conteos pendientes en cola (offline → online)
+    if (AppState.currentRole === 'worker' && AppState.pendingSync.counts.length > 0) {
+        const remaining = [];
+        for (const countEntry of AppState.pendingSync.counts) {
+            const { error } = await supabaseClient.from('worker_counts').upsert([{
+                task_id: countEntry.item.id,
+                worker_email: AppState.currentUserEmail,
+                cajas: countEntry.cajas,
+                unidades: countEntry.unidades,
+                averias: countEntry.averias,
+                item: countEntry.item
+            }], { onConflict: 'task_id,worker_email' });
+
+            if (error) {
+                console.warn('Error sincronizando conteo pendiente para', countEntry.item.id, ':', error);
+                remaining.push(countEntry);
+            } else {
+                // Asegurar que el conteo también esté en AppState.counts (por si se perdió)
+                const idx = AppState.counts.findIndex(c => c.item.id === countEntry.item.id);
+                if (idx >= 0) {
+                    AppState.counts[idx] = countEntry;
+                } else {
+                    AppState.counts.push(countEntry);
+                }
+            }
+        }
+        AppState.pendingSync.counts = remaining;
+        saveData();
+        if (remaining.length === 0) {
+            showToast('Conteos pendientes sincronizados correctamente.', 'success');
+        } else {
+            showToast(`${remaining.length} conteo(s) no pudieron sincronizarse. Se reintentará.`, 'warning');
+        }
+    } else if (AppState.currentRole === 'worker' && AppState.counts.length > 0) {
+        // Sin cola pendiente pero hay conteos locales — sincronizar igualmente como respaldo
         const success = await syncCountsToSupabase();
         if (success) {
             showToast('Conteos locales sincronizados correctamente con el servidor.', 'success');
@@ -772,15 +805,40 @@ async function pushTasksToSupabase() {
 async function loadData() {
     const savedCatalog = localStorage.getItem('ia_catalog');
     const savedTasks = localStorage.getItem('ia_todayTasks');
-    const savedCounts = localStorage.getItem('ia_counts');
     const savedHistory = localStorage.getItem('ia_history');
     const savedSync = localStorage.getItem('ia_pendingSync');
+
+    // Para conteos: localStorage primero, sessionStorage como respaldo
+    let savedCounts = localStorage.getItem('ia_counts');
+    if (!savedCounts || savedCounts === '[]') {
+        const backup = sessionStorage.getItem('ia_counts_backup');
+        if (backup && backup !== '[]') {
+            console.warn('localStorage de conteos vacío — restaurando desde sessionStorage backup.');
+            savedCounts = backup;
+        }
+    }
+
+    // Para pendingSync: igual, sessionStorage como respaldo
+    let savedSyncFinal = savedSync;
+    if (!savedSyncFinal) {
+        const backupSync = sessionStorage.getItem('ia_pendingSync_backup');
+        if (backupSync) {
+            console.warn('localStorage de pendingSync vacío — restaurando desde sessionStorage backup.');
+            savedSyncFinal = backupSync;
+        }
+    }
 
     AppState.catalog = savedCatalog ? JSON.parse(savedCatalog) : initialCatalog;
     AppState.todayTasks = savedTasks ? JSON.parse(savedTasks) : [];
     AppState.counts = savedCounts ? JSON.parse(savedCounts) : [];
     AppState.history = savedHistory ? JSON.parse(savedHistory) : [];
-    AppState.pendingSync = savedSync ? JSON.parse(savedSync) : { tasks: [], history: [] };
+
+    const parsedSync = savedSyncFinal ? JSON.parse(savedSyncFinal) : {};
+    AppState.pendingSync = {
+        tasks: parsedSync.tasks || [],
+        history: parsedSync.history || [],
+        counts: parsedSync.counts || []
+    };
 
     if (USE_SUPABASE) {
         initSupabase();
@@ -796,7 +854,18 @@ function saveData() {
     localStorage.setItem('ia_counts', JSON.stringify(AppState.counts));
     localStorage.setItem('ia_history', JSON.stringify(AppState.history));
     localStorage.setItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
-    
+
+    // Segunda copia en sessionStorage como respaldo inmediato contra limpieza de localStorage
+    try {
+        sessionStorage.setItem('ia_counts_backup', JSON.stringify(AppState.counts));
+        sessionStorage.setItem('ia_pendingSync_backup', JSON.stringify(AppState.pendingSync));
+    } catch(e) { /* sessionStorage lleno o no disponible — ignorar */ }
+
+    // Worker: sync agresiva en background cada vez que se guarda un conteo
+    if (AppState.currentRole === 'worker' && USE_SUPABASE && supabaseClient && navigator.onLine) {
+        syncCountsToSupabase().catch(e => console.warn('Background sync error:', e));
+    }
+
     if (AppState.currentRole === 'admin') updateAdminDashboard();
 }
 
@@ -1159,6 +1228,28 @@ async function deleteSelectedTasks() {
         return;
     }
 
+    // Verificar conteos activos en Supabase antes de borrar
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        try {
+            const { data: existingCounts, error: countErr } = await supabaseClient
+                .from('worker_counts')
+                .select('task_id, worker_email, cajas, unidades');
+
+            if (!countErr && existingCounts && existingCounts.length > 0) {
+                const workers = [...new Set(existingCounts.map(r => r.worker_email))];
+                const proceed = confirm(
+                    `⚠️ Hay ${existingCounts.length} conteo(s) activos de ${workers.length} trabajador(es):\n` +
+                    `  ${workers.join(', ')}\n\n` +
+                    'Eliminar las tareas borrará estos conteos sin guardarlos.\n\n' +
+                    '¿Deseas continuar de todas formas?'
+                );
+                if (!proceed) return;
+            }
+        } catch (e) {
+            console.warn('Error verificando conteos activos antes de eliminar tareas:', e);
+        }
+    }
+
     if (!confirm('¿Eliminar todas las tareas asignadas para hoy?')) return;
 
     AppState.todayTasks = [];
@@ -1190,6 +1281,36 @@ async function publishDailyTask() {
         showToast('Debes seleccionar productos para publicar.', 'danger');
         return;
     }
+
+    // Verificar si ya hay conteos activos en Supabase antes de sobrescribir
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        try {
+            const { data: existingCounts, error: countErr } = await supabaseClient
+                .from('worker_counts')
+                .select('id', { count: 'exact', head: true });
+
+            if (!countErr && existingCounts !== null) {
+                // head:true devuelve null data pero el count está en la respuesta
+            }
+
+            // Re-query con count real
+            const { count, error: countErr2 } = await supabaseClient
+                .from('worker_counts')
+                .select('*', { count: 'exact', head: true });
+
+            if (!countErr2 && count > 0) {
+                const proceed = confirm(
+                    `⚠️ Hay ${count} conteo(s) activos en curso del trabajador.\n\n` +
+                    'Publicar una nueva tarea borrará esos conteos sin guardarlos en el historial.\n\n' +
+                    '¿Deseas continuar de todas formas?'
+                );
+                if (!proceed) return;
+            }
+        } catch (e) {
+            console.warn('Error verificando conteos activos antes de publicar:', e);
+        }
+    }
+
     AppState.counts = [];
     saveData();
 
@@ -1393,6 +1514,75 @@ window.finishDay = async function() {
     if (AppState.todayTasks.length === 0) {
         showToast('No hay productos asignados para finalizar.', 'danger');
         return;
+    }
+
+    // Antes de cerrar: traer los conteos más recientes de Supabase para que el PDF
+    // incluya lo que los workers hayan enviado (incluso desde otros dispositivos).
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        showToast('Obteniendo conteos actualizados antes de cerrar el día...', 'info');
+        try {
+            const { data: freshCounts, error: fetchErr } = await supabaseClient
+                .from('worker_counts')
+                .select('*');
+
+            if (fetchErr) {
+                console.warn('Error obteniendo conteos finales desde Supabase:', fetchErr);
+                // No bloqueamos — usamos los conteos locales que tengamos
+            } else if (freshCounts && freshCounts.length > 0) {
+                // Fusionar: los conteos de Supabase tienen precedencia sobre los locales
+                freshCounts.forEach(record => {
+                    const idx = AppState.counts.findIndex(c => c.item && c.item.id === record.task_id);
+                    const freshEntry = {
+                        item: record.item || { id: record.task_id },
+                        cajas: record.cajas,
+                        unidades: record.unidades,
+                        averias: record.averias
+                    };
+                    if (idx >= 0) {
+                        AppState.counts[idx] = freshEntry;
+                    } else {
+                        AppState.counts.push(freshEntry);
+                    }
+                });
+                saveData();
+            }
+
+            // Verificar si hay tareas sin ningún conteo — posible worker offline
+            const taskIdsWithCounts = new Set((freshCounts || []).map(r => r.task_id));
+            const tasksWithoutCount = AppState.todayTasks.filter(t => !taskIdsWithCounts.has(t.id));
+
+            if (tasksWithoutCount.length > 0) {
+                // Agrupar por proveedor para mostrar cuántos productos faltan
+                const missingByProvider = {};
+                tasksWithoutCount.forEach(t => {
+                    const prov = t.provider || 'sin proveedor';
+                    missingByProvider[prov] = (missingByProvider[prov] || 0) + 1;
+                });
+                const detail = Object.entries(missingByProvider)
+                    .map(([prov, n]) => `  • ${prov}: ${n} producto(s)`)
+                    .join('\n');
+
+                const proceed = confirm(
+                    `⚠️ ATENCIÓN: ${tasksWithoutCount.length} producto(s) NO tienen conteo registrado:\n\n` +
+                    `${detail}\n\n` +
+                    'Esto puede significar que algún trabajador no ha sincronizado sus conteos todavía.\n\n' +
+                    '¿Deseas cerrar el día igualmente? Los productos sin conteo quedarán en 0.'
+                );
+                if (!proceed) return;
+            }
+        } catch (e) {
+            console.warn('Error inesperado al obtener conteos finales:', e);
+        }
+    } else if (!navigator.onLine) {
+        // Advertir si hay conteos en la cola pendiente que aún no llegaron al servidor
+        if (AppState.pendingSync.counts.length > 0) {
+            const proceed = confirm(
+                `⚠️ Hay ${AppState.pendingSync.counts.length} conteo(s) pendientes de sincronizar.\n\n` +
+                'Si cierras el día ahora puede que algunos conteos no estén incluidos en el PDF.\n\n' +
+                '¿Deseas continuar de todas formas?'
+            );
+            if (!proceed) return;
+        }
     }
 
     const dateStr = new Date().toLocaleDateString('es-CO');
@@ -1843,12 +2033,33 @@ async function submitProductCount() {
         if (navigator.onLine) {
             const success = await syncCountsToSupabase();
             if (success) {
+                // Limpiar este item de la cola pendiente si estaba ahí
+                AppState.pendingSync.counts = AppState.pendingSync.counts.filter(c => c.item.id !== task.id);
+                saveData();
                 showToast('¡Conteo registrado y sincronizado en la nube!', 'success');
             } else {
-                showToast('Guardado localmente. Error de sincronización (revisa consola o base de datos).', 'warning');
+                // Falló la sync aunque hay conexión — encolar para reintento
+                const alreadyQueued = AppState.pendingSync.counts.find(c => c.item.id === task.id);
+                if (!alreadyQueued) {
+                    AppState.pendingSync.counts.push(newCount);
+                } else {
+                    const qi = AppState.pendingSync.counts.findIndex(c => c.item.id === task.id);
+                    AppState.pendingSync.counts[qi] = newCount;
+                }
+                saveData();
+                showToast('Guardado localmente. Se sincronizará automáticamente al reconectar.', 'warning');
             }
         } else {
-            showToast('Guardado localmente. Sin conexión para sincronizar.', 'warning');
+            // Sin conexión — encolar para reintento cuando vuelva online
+            const alreadyQueued = AppState.pendingSync.counts.find(c => c.item.id === task.id);
+            if (!alreadyQueued) {
+                AppState.pendingSync.counts.push(newCount);
+            } else {
+                const qi = AppState.pendingSync.counts.findIndex(c => c.item.id === task.id);
+                AppState.pendingSync.counts[qi] = newCount;
+            }
+            saveData();
+            showToast('Sin conexión. Conteo guardado. Se enviará automáticamente al reconectar.', 'warning');
         }
     } else {
         showToast('¡Conteo guardado localmente!', 'success');
