@@ -37,10 +37,12 @@
 <body class="dark-theme">
     
     <div id="login-screen" class="login-screen">
-        <div class="login-panel glass-panel login-panel-large">
+        <!-- PASO 1: Login normal (admin y workers con cuenta) -->
+        <div id="login-step-credentials" class="login-panel glass-panel login-panel-large">
             <div class="login-header login-header-centered">
                 <img src="logo.png" alt="InventApp" class="login-logo" onerror="this.onerror=null; this.src='icon-192.png';">
                 <h2>Bienvenido a InventApp</h2>
+                <p style="color:var(--text-muted); margin-top:4px; font-size:0.9rem;">Control de inventario por bloques</p>
             </div>
             <form id="login-form" onsubmit="handleLogin(event)">
                 <div class="form-group">
@@ -53,6 +55,42 @@
                 </div>
                 <button class="btn btn-primary btn-block" type="submit">Ingresar</button>
             </form>
+            <div style="margin-top:1.5rem; border-top: 1px solid var(--border-color); padding-top:1.5rem;">
+                <p style="text-align:center; color:var(--text-muted); font-size:0.85rem; margin-bottom:1rem;">¿Eres auxiliar de inventario?</p>
+                <button class="btn btn-secondary btn-block" onclick="showBlockLogin()">
+                    <i data-lucide="grid-3x3"></i> Entrar como Auxiliar de Bloque
+                </button>
+            </div>
+        </div>
+
+        <!-- PASO 2: Login auxiliar por bloque (sin cuenta) -->
+        <div id="login-step-block" class="login-panel glass-panel login-panel-large" style="display:none;">
+            <div class="login-header login-header-centered">
+                <img src="logo.png" alt="InventApp" class="login-logo" onerror="this.onerror=null; this.src='icon-192.png';">
+                <h2>Seleccionar Bloque</h2>
+                <p style="color:var(--text-muted); margin-top:4px; font-size:0.9rem;">Ingresa tu nombre y elige tu bloque asignado</p>
+            </div>
+            <div class="form-group">
+                <label class="input-label" for="block-worker-name">Tu nombre</label>
+                <input id="block-worker-name" class="input-form" type="text" placeholder="Ej: María García" required>
+            </div>
+            <div class="form-group" style="margin-top:1rem;">
+                <label class="input-label">Selecciona tu bloque</label>
+                <div id="block-selector-grid" class="block-selector-grid">
+                    <!-- Se renderiza dinámicamente según bloques publicados -->
+                </div>
+                <p id="block-no-tasks-msg" class="text-muted" style="text-align:center; margin-top:1rem; display:none;">
+                    <i data-lucide="clock"></i> El administrador aún no ha publicado bloques para hoy.
+                </p>
+            </div>
+            <div style="display:flex; gap:0.75rem; margin-top:1.5rem;">
+                <button class="btn btn-secondary" onclick="showCredentialsLogin()" style="flex:1;">
+                    <i data-lucide="arrow-left"></i> Volver
+                </button>
+                <button id="btn-enter-block" class="btn btn-primary" onclick="loginWithBlock()" style="flex:2;" disabled>
+                    <i data-lucide="log-in"></i> Entrar a mi Bloque
+                </button>
+            </div>
         </div>
     </div>
 
@@ -145,6 +183,9 @@
                     <button class="tab-btn active" onclick="switchAdminTab('assign')">
                         <i data-lucide="list-plus"></i> Asignar / Subir Excel
                     </button>
+                    <button class="tab-btn" onclick="switchAdminTab('blocks')">
+                        <i data-lucide="grid-3x3"></i> Bloques
+                    </button>
                     <button class="tab-btn" onclick="switchAdminTab('monitor')">
                         <i data-lucide="bar-chart-3"></i> Monitor en Vivo
                     </button>
@@ -155,14 +196,33 @@
 
                 <!-- Admin Tab: Assign Tasks -->
                 <div id="admin-tab-assign" class="admin-tab-content active">
+
+                    <!-- Barra de carga: selector de bloque + proveedor + botón -->
                     <div class="section-card glass-panel">
                         <div class="card-header-actions">
                             <div>
-                                <h2>Cargar Tareas del Día</h2>
-                                <p class="card-subtitle">Sube un Excel con Código y Nombre, o selecciona manualmente.</p>
+                                <h2>Cargar Excel por Bloque</h2>
+                                <p class="card-subtitle">Carga un Excel para cada bloque. Cada auxiliar solo verá los productos de su bloque.</p>
                             </div>
-                            <div class="header-buttons" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                <select id="excel-provider-select" class="input-form" style="padding: 8px 12px; height: 38px;">
+                            <div class="header-buttons" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                <!-- Selector de bloque destino -->
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <label class="input-label" style="margin:0;white-space:nowrap;font-size:0.82rem;">Bloque:</label>
+                                    <select id="excel-block-select" class="input-form" style="padding:8px 10px; height:38px; min-width:80px; font-weight:700;">
+                                        <option value="1">B1</option>
+                                        <option value="2">B2</option>
+                                        <option value="3">B3</option>
+                                        <option value="4">B4</option>
+                                        <option value="5">B5</option>
+                                        <option value="6">B6</option>
+                                        <option value="7">B7</option>
+                                        <option value="8">B8</option>
+                                        <option value="9">B9</option>
+                                        <option value="10">B10</option>
+                                    </select>
+                                </div>
+                                <!-- Selector de proveedor -->
+                                <select id="excel-provider-select" class="input-form" style="padding:8px 12px; height:38px;">
                                     <option value="alpina" selected>Alpina</option>
                                     <option value="zenu">Zenú</option>
                                     <option value="fleischmann">Fleischmann</option>
@@ -175,37 +235,78 @@
                                     <i data-lucide="file-spreadsheet"></i> Cargar Excel
                                 </button>
                                 <button class="btn btn-primary" onclick="publishDailyTask()">
-                                    <i data-lucide="send"></i> Publicar
+                                    <i data-lucide="send"></i> Publicar Todo
                                 </button>
                             </div>
                         </div>
 
-                        <div class="provider-filters">
-                            <button class="provider-filter-pill active" data-provider="all" onclick="filterCatalogByProvider('all', event)">Todos</button>
-                            <button class="provider-filter-pill" data-provider="alpina" onclick="filterCatalogByProvider('alpina', event)"><span class="dot alpina"></span>Alpina</button>
-                            <button class="provider-filter-pill" data-provider="zenu" onclick="filterCatalogByProvider('zenu', event)"><span class="dot zenu"></span>Zenú</button>
-                            <button class="provider-filter-pill" data-provider="fleischmann" onclick="filterCatalogByProvider('fleischmann', event)"><span class="dot fleischmann"></span>Fleischmann</button>
-                            <button class="provider-filter-pill" data-provider="unilever" onclick="filterCatalogByProvider('unilever', event)"><span class="dot unilever"></span>Unilever</button>
-                            <button class="provider-filter-pill" data-provider="familia" onclick="filterCatalogByProvider('familia', event)"><span class="dot familia"></span>Familia</button>
+                        <!-- Resumen de bloques cargados -->
+                        <div id="assign-blocks-summary" class="assign-blocks-summary margin-top-md">
+                            <div class="text-center text-muted" style="padding:2rem; grid-column:1/-1;">
+                                <i data-lucide="upload" style="width:32px;height:32px;margin-bottom:8px;display:block;margin-left:auto;margin-right:auto;"></i>
+                                No hay bloques cargados. Selecciona un bloque, un proveedor y carga su Excel.
+                            </div>
                         </div>
+                    </div>
 
-                        <div class="search-box-container">
+                    <!-- Vista de detalle del bloque seleccionado -->
+                    <div id="assign-block-detail" class="section-card glass-panel margin-top-md" style="display:none;">
+                        <div class="card-header-actions">
+                            <div>
+                                <h2 id="assign-detail-title">Bloque 1 — Productos</h2>
+                                <p class="card-subtitle" id="assign-detail-subtitle">0 productos cargados</p>
+                            </div>
+                            <button class="btn btn-danger btn-sm" onclick="clearBlock(currentDetailBlock)">
+                                <i data-lucide="trash-2"></i> Limpiar Bloque
+                            </button>
+                        </div>
+                        <div class="search-box-container" style="margin-top:1rem;">
                             <i data-lucide="search" class="search-icon"></i>
-                            <input type="text" id="catalog-search" placeholder="Buscar producto..." oninput="handleCatalogSearch()">
+                            <input type="text" id="block-detail-search" placeholder="Buscar producto en este bloque..." oninput="renderBlockDetail()">
                         </div>
-
-                        <div class="table-responsive">
-                            <table class="data-table" id="catalog-table">
+                        <div class="table-responsive margin-top-md">
+                            <table class="data-table">
                                 <thead>
                                     <tr>
-                                        <th style="width: 70px;">¿Contar?</th>
+                                        <th>#</th>
                                         <th>Producto</th>
+                                        <th>Código</th>
                                         <th>Proveedor</th>
-                                        <th style="width: 120px;">Acción</th>
+                                        <th>Emb.</th>
+                                        <th>Inv. Esperado</th>
+                                        <th style="width:80px;">Quitar</th>
                                     </tr>
                                 </thead>
-                                <tbody id="catalog-table-body"></tbody>
+                                <tbody id="block-detail-table-body"></tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Admin Tab: Blocks (monitor en vivo) -->
+                <div id="admin-tab-blocks" class="admin-tab-content">
+                    <div class="section-card glass-panel">
+                        <div class="card-header-actions">
+                            <div>
+                                <h2>Monitor de Bloques en Tiempo Real</h2>
+                                <p class="card-subtitle">Avance de cada auxiliar según el bloque que le fue asignado.</p>
+                            </div>
+                        </div>
+
+                        <div id="blocks-overview-grid" class="blocks-overview-grid margin-top-md">
+                            <div class="text-center text-muted" style="grid-column:1/-1; padding:2rem;">
+                                Carga los Excel de cada bloque para ver el resumen aquí.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Avance en tiempo real por bloque -->
+                    <div class="section-card glass-panel margin-top-md">
+                        <h2>Avance en Tiempo Real por Auxiliar</h2>
+                        <div id="blocks-live-progress" class="blocks-live-progress margin-top-md">
+                            <div class="text-center text-muted" style="padding:2rem;">
+                                Esperando conteos de los auxiliares...
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -248,6 +349,7 @@
                             <table class="data-table">
                                 <thead>
                                     <tr>
+                                        <th>Bloque</th>
                                         <th>Producto</th>
                                         <th>Emb.</th>
                                         <th>Inv. Total</th>
@@ -257,7 +359,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="live-detail-table-body">
-                                    <tr><td colspan="6" class="text-center py-4">Esperando conteos...</td></tr>
+                                    <tr><td colspan="7" class="text-center py-4">Esperando conteos...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -347,10 +449,27 @@
 
             <!-- WORKER VIEWS -->
             <div id="view-worker" class="role-view">
+
+                <!-- Banner de bloque activo -->
+                <div id="worker-block-banner" class="worker-block-banner" style="display:none;">
+                    <div class="block-banner-left">
+                        <div class="block-number-badge" id="worker-block-badge">B1</div>
+                        <div>
+                            <span class="block-banner-title" id="worker-block-title">Bloque 1</span>
+                            <span class="block-banner-sub" id="worker-block-range">Productos: —</span>
+                        </div>
+                    </div>
+                    <div class="block-banner-progress">
+                        <span id="worker-block-progress-text">0 / 0</span>
+                        <div class="progress-bar-container" style="width:100px;">
+                            <div class="progress-bar-fill" id="worker-block-progress-bar" style="width:0%"></div>
+                        </div>
+                    </div>
+                </div>
                 
                 <section class="worker-summary-header">
                     <div class="worker-welcome">
-                            <h2 id="worker-welcome-name">¡Hola, Auxiliar!</h2>
+                        <h2 id="worker-welcome-name">¡Hola, Auxiliar!</h2>
                         <p id="worker-assigned-summary">Cargando tareas...</p>
                     </div>
                     <div class="worker-stats-row">
@@ -376,7 +495,7 @@
                 <div id="worker-empty-state" class="empty-state hidden">
                     <i data-lucide="calendar-check" class="empty-state-icon"></i>
                     <h3>No tienes tareas asignadas</h3>
-                    <p>El administrador no ha publicado productos para contar hoy.</p>
+                    <p>El administrador no ha publicado los bloques para hoy.</p>
                 </div>
             </div>
 

@@ -1,15 +1,18 @@
 /**
- * InventApp PWA - Lógica Principal Estandarizada
+ * InventApp PWA - Lógica Principal con Sistema de Bloques
  */
 
 const AppState = {
     loggedIn: false,
-    currentRole: null,
+    currentRole: null,       // 'admin' | 'worker'
     currentUserId: null,
     currentUserName: null,
     currentUserEmail: null,
+    currentBlock: null,      // número de bloque del auxiliar (1-N), null = admin/no asignado
     catalog: [],
-    todayTasks: [],
+    todayTasks: [],          // todos los productos del día
+    blocks: {},              // { 1: [items...], 2: [items...], ... }  distribución por bloque
+    numBlocks: 5,            // cantidad de bloques configurada por el admin
     counts: [],
     history: [],
     pendingSync: { tasks: [], history: [], counts: [] },
@@ -85,10 +88,143 @@ function showLoginScreen() {
     const appContainer = document.querySelector('.app-container');
     if (loginScreen) loginScreen.style.display = 'flex';
     if (appContainer) appContainer.style.display = 'none';
+    showCredentialsLogin();
     const emailInput = document.getElementById('login-email');
     const passwordInput = document.getElementById('login-password');
     if (emailInput) emailInput.value = '';
     if (passwordInput) passwordInput.value = '';
+}
+
+// ── Mostrar panel de login con email/contraseña ──
+function showCredentialsLogin() {
+    document.getElementById('login-step-credentials').style.display = '';
+    document.getElementById('login-step-block').style.display = 'none';
+    lucide.createIcons();
+}
+
+// ── Mostrar panel de login por bloque ──
+async function showBlockLogin() {
+    document.getElementById('login-step-credentials').style.display = 'none';
+    document.getElementById('login-step-block').style.display = '';
+    document.getElementById('btn-enter-block').disabled = true;
+    lucide.createIcons();
+
+    // Renderizar selector de bloques disponibles
+    await renderBlockSelector();
+}
+
+async function renderBlockSelector() {
+    const grid = document.getElementById('block-selector-grid');
+    const noTasksMsg = document.getElementById('block-no-tasks-msg');
+    grid.innerHTML = '<div class="text-muted" style="text-align:center;padding:1rem;">Cargando bloques...</div>';
+
+    let blocksData = {};   // { 1: [...items], 2: [...items] }
+
+    if (USE_SUPABASE && supabaseClient) {
+        try {
+            // Solo traer publicaciones de HOY con payload no vacío
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+
+            const { data, error } = await supabaseClient
+                .from(SUPABASE_TASKS_TABLE)
+                .select('id, payload, blocks, status, created_at, numBlocks')
+                .eq('status', 'active')
+                .gte('created_at', todayStart.toISOString())
+                .order('created_at', { ascending: false })
+                .limit(1);
+
+            if (!error && data?.length > 0) {
+                const row = data[0];
+                // Preferir campo `blocks` (nuevo sistema); fallback a payload plano
+                if (row.blocks && typeof row.blocks === 'object' && Object.keys(row.blocks).length) {
+                    blocksData = row.blocks;
+                } else if (Array.isArray(row.payload) && row.payload.length > 0) {
+                    // Publicación del sistema antiguo: agrupar por _blockNum
+                    row.payload.forEach(t => {
+                        const bn = t._blockNum || 1;
+                        if (!blocksData[bn]) blocksData[bn] = [];
+                        blocksData[bn].push(t);
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('renderBlockSelector fetch error', e);
+        }
+    }
+
+    // Sin fallback a localStorage — si el admin no ha publicado nada hoy, mostrar aviso
+    const blockNums = Object.keys(blocksData).map(Number).filter(bn => (blocksData[bn]||[]).length > 0).sort((a,b)=>a-b);
+
+    if (!blockNums.length) {
+        grid.innerHTML = '';
+        noTasksMsg.style.display = '';
+        lucide.createIcons();
+        return;
+    }
+
+    noTasksMsg.style.display = 'none';
+    grid.innerHTML = '';
+
+    blockNums.forEach(blockNum => {
+        const items = blocksData[blockNum] || [];
+        const btn = document.createElement('button');
+        btn.className = 'block-select-btn';
+        btn.dataset.block = blockNum;
+        btn.innerHTML = `
+            <span class="block-num">B${blockNum}</span>
+            <span class="block-item-count">${items.length} productos</span>
+        `;
+        btn.onclick = () => {
+            document.querySelectorAll('.block-select-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            document.getElementById('btn-enter-block').disabled = false;
+        };
+        grid.appendChild(btn);
+    });
+    lucide.createIcons();
+}
+
+async function loginWithBlock() {
+    const workerName = document.getElementById('block-worker-name').value.trim();
+    const selectedBtn = document.querySelector('.block-select-btn.selected');
+
+    if (!workerName) {
+        showToast('Ingresa tu nombre antes de continuar.', 'danger');
+        return;
+    }
+    if (!selectedBtn) {
+        showToast('Selecciona un bloque para continuar.', 'danger');
+        return;
+    }
+
+    const blockNum = parseInt(selectedBtn.dataset.block);
+
+    AppState.loggedIn = true;
+    AppState.currentRole = 'worker';
+    AppState.currentUserId = null;
+    AppState.currentUserName = workerName;
+    // Email único basado en nombre+bloque para identificar conteos en Supabase
+    // Sanitizamos el nombre para crear un identificador seguro
+    const safeName = workerName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    AppState.currentUserEmail = `${safeName}.b${blockNum}@inventapp.local`;
+    AppState.currentBlock = blockNum;
+
+    updateRoleSwitcherVisibility('worker');
+    document.getElementById('login-screen').style.display = 'none';
+    document.querySelector('.app-container').style.display = 'flex';
+    switchRole('worker');
+    updateUserDisplay();
+    saveLocalSession();
+
+    if (USE_SUPABASE && supabaseClient) {
+        await fetchLatestTasks();
+        await fetchWorkerCountsForCurrentUser();
+        subscribeTaskAssignments();
+    }
+
+    requestNotificationPermission();
+    showToast(`¡Hola ${workerName}! Entraste al Bloque ${blockNum}.`, 'success');
 }
 
 function saveLocalSession() {
@@ -97,7 +233,8 @@ function saveLocalSession() {
         currentRole: AppState.currentRole,
         currentUserId: AppState.currentUserId,
         currentUserName: AppState.currentUserName,
-        currentUserEmail: AppState.currentUserEmail
+        currentUserEmail: AppState.currentUserEmail,
+        currentBlock: AppState.currentBlock
     };
     localStorage.setItem('ia_session', JSON.stringify(sessionData));
 }
@@ -119,6 +256,7 @@ async function restoreLocalSession() {
         AppState.currentUserId = sessionData.currentUserId || null;
         AppState.currentUserName = sessionData.currentUserName || sessionData.currentUserEmail || (sessionData.currentRole === 'admin' ? 'Administrador' : 'Trabajador');
         AppState.currentUserEmail = sessionData.currentUserEmail || '';
+        AppState.currentBlock = sessionData.currentBlock || null;
 
         updateRoleSwitcherVisibility(AppState.currentRole);
         document.getElementById('login-screen').style.display = 'none';
@@ -197,7 +335,6 @@ async function syncPendingData() {
             showToast('Tareas pendientes sincronizadas correctamente.', 'success');
         }
     }
-
     if (AppState.pendingSync.history.length > 0) {
         const remainingHistory = [];
         for (const record of AppState.pendingSync.history) {
@@ -235,6 +372,8 @@ async function syncPendingData() {
             const { error } = await supabaseClient.from('worker_counts').upsert([{
                 task_id: countEntry.item.id,
                 worker_email: AppState.currentUserEmail,
+                worker_name: AppState.currentUserName || AppState.currentUserEmail,
+                block_num: AppState.currentBlock || 0,
                 cajas: countEntry.cajas,
                 unidades: countEntry.unidades,
                 averias: countEntry.averias,
@@ -345,6 +484,7 @@ window.logout = async function() {
     AppState.currentUserId = null;
     AppState.currentUserName = '';
     AppState.currentUserEmail = '';
+    AppState.currentBlock = null;
     document.querySelector('.app-container').style.display = 'none';
     showLoginScreen();
     showToast('Sesión cerrada correctamente.', 'success');
@@ -433,6 +573,7 @@ async function fallbackLocalLogin(email, password) {
     AppState.currentUserId = null;
     AppState.currentUserName = user.name || (user.role === 'admin' ? 'Administrador' : 'Trabajador');
     AppState.currentUserEmail = email;
+    AppState.currentBlock = null; // login normal: sin bloque específico
     updateRoleSwitcherVisibility(user.role);
 
     document.getElementById('login-screen').style.display = 'none';
@@ -466,6 +607,7 @@ async function signInUser(user) {
     AppState.loggedIn = true;
     AppState.currentRole = role;
     AppState.currentUserId = user?.id || null;
+    AppState.currentBlock = null;
     updateRoleSwitcherVisibility(role);
 
     document.getElementById('login-screen').style.display = 'none';
@@ -493,8 +635,11 @@ function updateUserDisplay() {
         const nameEl = document.getElementById('user-name');
         const emailEl = document.getElementById('user-email');
         const workerWelcome = document.getElementById('worker-welcome-name');
-        if (nameEl) nameEl.textContent = AppState.currentUserName || 'Usuario';
-        if (emailEl) emailEl.textContent = AppState.currentUserEmail || '';
+        const blockSuffix = AppState.currentBlock ? ` — Bloque ${AppState.currentBlock}` : '';
+        if (nameEl) nameEl.textContent = (AppState.currentUserName || 'Usuario') + blockSuffix;
+        if (emailEl) emailEl.textContent = AppState.currentBlock
+            ? `Auxiliar · Bloque ${AppState.currentBlock}`
+            : (AppState.currentUserEmail || '');
         if (workerWelcome) {
             if (AppState.currentRole === 'worker') {
                 workerWelcome.textContent = `¡Hola, ${AppState.currentUserName || 'Auxiliar'}!`;
@@ -607,10 +752,20 @@ async function fetchWorkerCounts() {
             item: record.item || { id: record.task_id },
             cajas: record.cajas,
             unidades: record.unidades,
-            averias: record.averias
+            averias: record.averias,
+            workerEmail: record.worker_email,
+            workerName: record.worker_name || record.worker_email,
+            blockNum: record.block_num || 0
         }));
         saveData();
         updateAdminDashboard();
+        renderBlocksLiveProgress();
+    } else {
+        // Sin conteos, limpiar y actualizar
+        AppState.counts = [];
+        saveData();
+        updateAdminDashboard();
+        renderBlocksLiveProgress();
     }
 }
 
@@ -652,9 +807,16 @@ async function fetchWorkerCountsForCurrentUser() {
 
 async function fetchLatestTasks() {
     if (!supabaseClient) return;
+
+    // Solo cargar tareas publicadas HOY y con status active
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
     const { data, error } = await supabaseClient
         .from(SUPABASE_TASKS_TABLE)
-        .select('id, payload, status, created_at')
+        .select('id, payload, status, created_at, numBlocks, blocks')
+        .eq('status', 'active')
+        .gte('created_at', todayStart.toISOString())
         .order('created_at', { ascending: false })
         .limit(1);
     if (error) {
@@ -664,15 +826,45 @@ async function fetchLatestTasks() {
         }
         return;
     }
+
     if (data?.length > 0) {
         const latest = data[0];
-        if (Array.isArray(latest.payload)) {
+        if (Array.isArray(latest.payload) && latest.payload.length > 0) {
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
-            saveData();
-            if (AppState.currentRole === 'worker') renderWorkerTasks();
+
+            // Restaurar bloques desde campo 'blocks'; fallback por _blockNum
+            if (latest.blocks && typeof latest.blocks === 'object' && Object.keys(latest.blocks).length) {
+                AppState.blocks = latest.blocks;
+            } else {
+                const rebuilt = {};
+                AppState.todayTasks.forEach(t => {
+                    const bn = t._blockNum || 1;
+                    if (!rebuilt[bn]) rebuilt[bn] = [];
+                    rebuilt[bn].push(t);
+                });
+                AppState.blocks = rebuilt;
+            }
+            AppState.numBlocks = latest.numBlocks || Object.keys(AppState.blocks).length || 0;
+        } else {
+            // Payload vacío → admin limpió el día
+            AppState.todayTasks = [];
+            AppState.blocks = {};
+            AppState.counts = [];
         }
+    } else {
+        // No hay publicación activa hoy → limpiar estado local
+        AppState.todayTasks = [];
+        AppState.blocks = {};
+        AppState.counts = [];
     }
-    
+
+    saveData();
+    if (AppState.currentRole === 'worker') renderWorkerTasks();
+    if (AppState.currentRole === 'admin') {
+        renderAssignTab();
+        renderBlocksTab();
+    }
+
     // Cargar conteos del worker en tiempo real
     if (AppState.currentRole === 'admin') {
         await fetchWorkerCounts();
@@ -715,9 +907,29 @@ function subscribeTaskAssignments() {
 function refreshTasksState(newRow) {
     if (!newRow || !Array.isArray(newRow.payload)) return;
     AppState.todayTasks = newRow.payload.map(task => ({ ...task }));
+
+    // Restaurar bloques desde el campo 'blocks' del payload de realtime
+    if (newRow.blocks && typeof newRow.blocks === 'object' && Object.keys(newRow.blocks).length) {
+        AppState.blocks = newRow.blocks;
+    } else {
+        // Fallback: agrupar por _blockNum
+        const rebuilt = {};
+        AppState.todayTasks.forEach(t => {
+            const bn = t._blockNum || 1;
+            if (!rebuilt[bn]) rebuilt[bn] = [];
+            rebuilt[bn].push(t);
+        });
+        AppState.blocks = rebuilt;
+    }
+    AppState.numBlocks = newRow.numBlocks || Object.keys(AppState.blocks).length || 0;
+
     saveData();
     if (AppState.currentRole === 'worker') renderWorkerTasks();
-    updateAdminDashboard();
+    if (AppState.currentRole === 'admin') {
+        updateAdminDashboard();
+        renderAssignTab();
+        renderBlocksTab();
+    }
     if (AppState.currentRole === 'worker') {
         notifyNewTaskAssignment(AppState.todayTasks.length);
     }
@@ -732,6 +944,8 @@ async function syncCountsToSupabase() {
         const { error } = await supabaseClient.from('worker_counts').upsert([{
             task_id: count.item.id,
             worker_email: AppState.currentUserEmail,
+            worker_name: AppState.currentUserName || AppState.currentUserEmail,
+            block_num: AppState.currentBlock || 0,
             cajas: count.cajas,
             unidades: count.unidades,
             averias: count.averias,
@@ -750,6 +964,8 @@ async function pushTasksToSupabase() {
     const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
     const taskRecord = {
         payload: taskPayload,
+        blocks: AppState.blocks,          // estructura completa { 1: [...], 2: [...] }
+        numBlocks: AppState.numBlocks,
         published_by: AppState.currentUserId,
         published_by_email: AppState.currentUserEmail,
         status: 'active'
@@ -807,6 +1023,8 @@ async function loadData() {
     const savedTasks = localStorage.getItem('ia_todayTasks');
     const savedHistory = localStorage.getItem('ia_history');
     const savedSync = localStorage.getItem('ia_pendingSync');
+    const savedBlocks = localStorage.getItem('ia_blocks');
+    const savedNumBlocks = localStorage.getItem('ia_numBlocks');
 
     // Para conteos: localStorage primero, sessionStorage como respaldo
     let savedCounts = localStorage.getItem('ia_counts');
@@ -832,6 +1050,8 @@ async function loadData() {
     AppState.todayTasks = savedTasks ? JSON.parse(savedTasks) : [];
     AppState.counts = savedCounts ? JSON.parse(savedCounts) : [];
     AppState.history = savedHistory ? JSON.parse(savedHistory) : [];
+    AppState.blocks = savedBlocks ? JSON.parse(savedBlocks) : {};
+    AppState.numBlocks = savedNumBlocks ? parseInt(savedNumBlocks) : 5;
 
     const parsedSync = savedSyncFinal ? JSON.parse(savedSyncFinal) : {};
     AppState.pendingSync = {
@@ -854,6 +1074,8 @@ function saveData() {
     localStorage.setItem('ia_counts', JSON.stringify(AppState.counts));
     localStorage.setItem('ia_history', JSON.stringify(AppState.history));
     localStorage.setItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
+    localStorage.setItem('ia_blocks', JSON.stringify(AppState.blocks));
+    localStorage.setItem('ia_numBlocks', String(AppState.numBlocks));
 
     // Segunda copia en sessionStorage como respaldo inmediato contra limpieza de localStorage
     try {
@@ -866,7 +1088,10 @@ function saveData() {
         syncCountsToSupabase().catch(e => console.warn('Background sync error:', e));
     }
 
-    if (AppState.currentRole === 'admin') updateAdminDashboard();
+    if (AppState.currentRole === 'admin') {
+        updateAdminDashboard();
+        renderBlocksTab();
+    }
 }
 
 async function fetchHistoryFromSupabase() {
@@ -1035,13 +1260,323 @@ function switchRole(role) {
 
     if (role === 'admin') {
         switchAdminTab('assign');
-        renderAdminCatalog('all');
+        renderAssignTab();
         updateAdminDashboard();
         renderAdminHistory();
+        renderBlocksTab();
     } else {
         renderWorkerTasks();
     }
 }
+
+// ═══════════════════════════════════════════════
+//  SISTEMA DE BLOQUES
+// ═══════════════════════════════════════════════
+
+/**
+ * Reconstruye AppState.todayTasks como la unión ordenada de todos los bloques.
+ * todayTasks mantiene _blockNum en cada ítem para saber a qué bloque pertenece.
+ */
+function rebuildTodayTasksFromBlocks() {
+    const all = [];
+    const sortedKeys = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+    sortedKeys.forEach(bn => {
+        (AppState.blocks[bn] || []).forEach(item => {
+            all.push({ ...item, _blockNum: bn });
+        });
+    });
+    AppState.todayTasks = all;
+    AppState.numBlocks = sortedKeys.length ? Math.max(...sortedKeys) : 0;
+}
+
+/**
+ * Limpia todos los productos de un bloque específico.
+ */
+function clearBlock(blockNum) {
+    if (!blockNum) return;
+    const count = (AppState.blocks[blockNum] || []).length;
+    if (!count) { showToast(`El Bloque ${blockNum} ya está vacío.`, 'info'); return; }
+    if (!confirm(`¿Eliminar los ${count} productos del Bloque ${blockNum}?`)) return;
+
+    delete AppState.blocks[blockNum];
+    rebuildTodayTasksFromBlocks();
+    // Limpiar conteos de ese bloque
+    AppState.counts = AppState.counts.filter(c => (c.blockNum || c.item?._blockNum) !== blockNum);
+    saveData();
+    renderAssignTab();
+    renderBlocksTab();
+    updateAdminDashboard();
+    showToast(`Bloque ${blockNum} eliminado.`, 'success');
+}
+
+/** Variable para saber qué bloque está mostrando el panel de detalle */
+let currentDetailBlock = null;
+
+/**
+ * Renderiza el tab Asignar: resumen de bloques + detalle del bloque activo.
+ */
+function renderAssignTab() {
+    const summary = document.getElementById('assign-blocks-summary');
+    if (!summary) return;
+
+    const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+
+    if (!blockNums.length) {
+        summary.innerHTML = `
+            <div class="text-center text-muted" style="padding:2rem; grid-column:1/-1;">
+                <i data-lucide="upload" style="width:32px;height:32px;margin-bottom:8px;display:block;margin-left:auto;margin-right:auto;"></i>
+                No hay bloques cargados. Selecciona un bloque, un proveedor y carga su Excel.
+            </div>`;
+        lucide.createIcons();
+        // Ocultar detalle
+        const detail = document.getElementById('assign-block-detail');
+        if (detail) detail.style.display = 'none';
+        currentDetailBlock = null;
+        return;
+    }
+
+    summary.innerHTML = '';
+    blockNums.forEach(bn => {
+        const items = AppState.blocks[bn] || [];
+        const counted = items.filter(t => AppState.counts.find(c => c.item.id === t.id)).length;
+        const pct = items.length > 0 ? Math.round((counted / items.length) * 100) : 0;
+
+        const card = document.createElement('div');
+        card.className = `assign-block-card ${pct === 100 ? 'block-done' : ''} ${currentDetailBlock === bn ? 'active-detail' : ''}`;
+        card.innerHTML = `
+            <div class="assign-block-card-header">
+                <span class="block-badge">Bloque ${bn}</span>
+                <span class="assign-block-count">${items.length} productos</span>
+            </div>
+            <div class="block-card-progress-bar" style="margin:8px 0;">
+                <div class="block-card-progress-fill" style="width:${pct}%"></div>
+            </div>
+            <div style="font-size:0.78rem; color:var(--text-muted); margin-bottom:8px;">${counted}/${items.length} contados · ${pct}%</div>
+            <div class="assign-block-actions">
+                <button class="btn btn-secondary btn-sm" onclick="showBlockDetail(${bn})">
+                    <i data-lucide="eye"></i> Ver productos
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="clearBlock(${bn})">
+                    <i data-lucide="trash-2"></i>
+                </button>
+            </div>
+        `;
+        summary.appendChild(card);
+    });
+    lucide.createIcons();
+
+    // Si ya hay un bloque activo en detalle, refrescarlo
+    if (currentDetailBlock && AppState.blocks[currentDetailBlock]) {
+        renderBlockDetail();
+    } else if (blockNums.length) {
+        // Mostrar el primer bloque por defecto
+        showBlockDetail(blockNums[0]);
+    }
+}
+
+/**
+ * Muestra el panel de detalle de un bloque específico.
+ */
+function showBlockDetail(blockNum) {
+    currentDetailBlock = blockNum;
+    const detail = document.getElementById('assign-block-detail');
+    if (detail) detail.style.display = '';
+
+    // Resaltar la tarjeta activa
+    document.querySelectorAll('.assign-block-card').forEach(c => c.classList.remove('active-detail'));
+    const cards = document.querySelectorAll('.assign-block-card');
+    const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+    const idx = blockNums.indexOf(blockNum);
+    if (cards[idx]) cards[idx].classList.add('active-detail');
+
+    renderBlockDetail();
+}
+
+/**
+ * Renderiza la tabla de productos del bloque activo en el panel de detalle.
+ */
+function renderBlockDetail() {
+    if (!currentDetailBlock) return;
+    const items = AppState.blocks[currentDetailBlock] || [];
+    const searchTerm = (document.getElementById('block-detail-search')?.value || '').toLowerCase();
+
+    const title = document.getElementById('assign-detail-title');
+    const subtitle = document.getElementById('assign-detail-subtitle');
+    if (title) title.textContent = `Bloque ${currentDetailBlock} — Productos`;
+    if (subtitle) subtitle.textContent = `${items.length} producto${items.length !== 1 ? 's' : ''} cargado${items.length !== 1 ? 's' : ''}`;
+
+    const tbody = document.getElementById('block-detail-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const filtered = items.filter(t =>
+        !searchTerm ||
+        t.name.toLowerCase().includes(searchTerm) ||
+        (t.code || '').toLowerCase().includes(searchTerm)
+    );
+
+    if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-muted">No hay productos que coincidan.</td></tr>`;
+        return;
+    }
+
+    filtered.forEach((item, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td style="color:var(--text-muted); font-size:0.8rem;">${i + 1}</td>
+            <td><strong>${item.name}</strong></td>
+            <td><span class="product-code-tag">${item.code || '—'}</span></td>
+            <td><span class="provider-badge ${item.provider || ''}">${item.provider || '—'}</span></td>
+            <td>${item.embalaje || 1}</td>
+            <td>${item.expectedStock || 0}</td>
+            <td>
+                <button class="btn btn-danger btn-sm" onclick="removeItemFromBlock('${item.id}', ${currentDetailBlock})">
+                    <i data-lucide="x"></i>
+                </button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+    lucide.createIcons();
+}
+
+/**
+ * Quita un producto individual de un bloque.
+ */
+function removeItemFromBlock(itemId, blockNum) {
+    if (!AppState.blocks[blockNum]) return;
+    AppState.blocks[blockNum] = AppState.blocks[blockNum].filter(t => t.id !== itemId);
+    if (AppState.blocks[blockNum].length === 0) delete AppState.blocks[blockNum];
+    AppState.counts = AppState.counts.filter(c => c.item.id !== itemId);
+    rebuildTodayTasksFromBlocks();
+    saveData();
+    renderAssignTab();
+    renderBlocksTab();
+    updateAdminDashboard();
+}
+
+/**
+ * (Mantenida por compatibilidad — ya no redistribuye automáticamente)
+ * Ahora solo reconstruye todayTasks desde blocks.
+ */
+function distributeIntoBlocks(tasks, numBlocks) {
+    // Función legacy — el nuevo sistema usa AppState.blocks directamente.
+    // Se conserva para no romper llamadas en fetchLatestTasks/refreshTasksState
+    // que reconstruyen bloques desde el payload de Supabase.
+    const n = Math.max(1, parseInt(numBlocks) || 1);
+    const distribution = {};
+    for (let i = 1; i <= n; i++) distribution[i] = [];
+    tasks.forEach((task, index) => {
+        // Si el task tiene _blockNum ya asignado (viene de Supabase), respetarlo
+        const bn = task._blockNum || ((index % n) + 1);
+        if (!distribution[bn]) distribution[bn] = [];
+        distribution[bn].push({ ...task, _blockNum: bn });
+    });
+    return distribution;
+}
+
+function redistributeBlocks() {
+    // Ya no se usa — dejada vacía para no romper si algo la llama
+}
+
+// ═══════════════════════════════════════════════
+
+/** Renderiza el tab de Bloques en la vista admin (overview + live progress) */
+function renderBlocksTab() {
+    const grid = document.getElementById('blocks-overview-grid');
+    if (!grid) return;
+
+    const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+
+    if (!blockNums.length) {
+        grid.innerHTML = '<div class="text-center text-muted" style="grid-column:1/-1; padding:2rem;">Carga los Excel de cada bloque para ver el resumen aquí.</div>';
+        renderBlocksLiveProgress();
+        return;
+    }
+
+    grid.innerHTML = '';
+    blockNums.forEach(bn => {
+        const items = AppState.blocks[bn] || [];
+        const countedInBlock = items.filter(t => AppState.counts.find(c => c.item.id === t.id)).length;
+        const pct = items.length > 0 ? Math.round((countedInBlock / items.length) * 100) : 0;
+
+        const card = document.createElement('div');
+        card.className = `block-overview-card ${pct === 100 ? 'block-done' : ''}`;
+        card.innerHTML = `
+            <div class="block-card-header">
+                <span class="block-badge">Bloque ${bn}</span>
+                <span class="block-card-count">${items.length} productos</span>
+            </div>
+            <div class="block-card-progress-bar">
+                <div class="block-card-progress-fill" style="width:${pct}%"></div>
+            </div>
+            <div class="block-card-footer">
+                <span class="${pct === 100 ? 'text-teal' : 'text-muted'}">${countedInBlock} / ${items.length} contados (${pct}%)</span>
+            </div>
+            <div class="block-card-products">
+                ${items.slice(0, 3).map(t => `<span class="block-product-chip">${t.name}</span>`).join('')}
+                ${items.length > 3 ? `<span class="block-product-chip text-muted">+${items.length - 3} más...</span>` : ''}
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+
+    renderBlocksLiveProgress();
+}
+
+/** Renderiza el panel de avance en tiempo real por bloque */
+function renderBlocksLiveProgress() {
+    const container = document.getElementById('blocks-live-progress');
+    if (!container) return;
+
+    if (!Object.keys(AppState.blocks).length) {
+        container.innerHTML = '<div class="text-center text-muted" style="padding:2rem;">Esperando conteos de los auxiliares...</div>';
+        return;
+    }
+
+    container.innerHTML = '';
+
+    // Agrupar conteos por bloque
+    const countsByBlock = {};
+    AppState.counts.forEach(c => {
+        const bn = c.blockNum || 0;
+        if (!countsByBlock[bn]) countsByBlock[bn] = [];
+        countsByBlock[bn].push(c);
+    });
+
+    Object.entries(AppState.blocks).forEach(([blockNum, items]) => {
+        const blockCounts = countsByBlock[parseInt(blockNum)] || [];
+        const countedIds = new Set(blockCounts.map(c => c.item.id));
+        const countedInBlock = items.filter(t => countedIds.has(t.id)).length;
+        const pct = items.length > 0 ? Math.round((countedInBlock / items.length) * 100) : 0;
+
+        // Auxiliares que han contado en este bloque
+        const workerNames = [...new Set(blockCounts.map(c => c.workerName || c.workerEmail || 'Auxiliar'))];
+
+        const row = document.createElement('div');
+        row.className = `block-live-row ${pct === 100 ? 'block-live-done' : ''}`;
+        row.innerHTML = `
+            <div class="block-live-label">
+                <span class="block-badge-sm">B${blockNum}</span>
+                <span class="block-live-workers">${workerNames.length ? workerNames.join(', ') : '<em>Sin auxiliar aún</em>'}</span>
+            </div>
+            <div class="block-live-bar-wrap">
+                <div class="block-live-bar">
+                    <div class="block-live-fill" style="width:${pct}%"></div>
+                </div>
+                <span class="block-live-pct">${countedInBlock}/${items.length} · ${pct}%</span>
+            </div>
+        `;
+        container.appendChild(row);
+    });
+}
+
+/** Publicar tareas con bloques — delegado a publishDailyTask (mantiene compatibilidad con onclick) */
+async function publishWithBlocks() {
+    return publishDailyTask();
+}
+
+// ═══════════════════════════════════════════════
 
 function switchAdminTab(tabId) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -1124,13 +1659,39 @@ function handleExcelUpload(event) {
         newItems = Object.values(itemsMap);
 
         if (newItems.length > 0) {
-            // Al subir un excel, reemplazamos las tareas de hoy por lo subido
-            AppState.catalog = [...AppState.catalog, ...newItems].filter((v,i,a)=>a.findIndex(v2=>(v2.code===v.code))===i); // merge unique
-            AppState.todayTasks = newItems; // Se asigna automáticamente para hoy
-            AppState.counts = []; // Reiniciamos los conteos si hay carga masiva nueva
+            // ── NUEVO FLUJO: asignar al bloque seleccionado ──
+            const targetBlock = parseInt(document.getElementById('excel-block-select')?.value) || 1;
+
+            // Marcar cada ítem con su bloque y añadir al catálogo (merge único por código)
+            const stampedItems = newItems.map(item => ({ ...item, _blockNum: targetBlock }));
+            AppState.catalog = [...AppState.catalog, ...stampedItems]
+                .filter((v, i, a) => a.findIndex(v2 => v2.code === v.code) === i);
+
+            // Añadir/reemplazar los productos de este bloque (permite recargar el mismo bloque)
+            if (!AppState.blocks[targetBlock]) {
+                AppState.blocks[targetBlock] = [];
+            }
+            // Merge: si el producto ya existe en este bloque, actualizarlo; si no, añadirlo
+            stampedItems.forEach(item => {
+                const idx = AppState.blocks[targetBlock].findIndex(t => t.code === item.code);
+                if (idx >= 0) {
+                    AppState.blocks[targetBlock][idx] = item;
+                } else {
+                    AppState.blocks[targetBlock].push(item);
+                }
+            });
+
+            // todayTasks = unión de todos los bloques (fuente de verdad para el resto del sistema)
+            rebuildTodayTasksFromBlocks();
+
             saveData();
-            renderAdminCatalog('all');
-            showToast(`¡Excel cargado! Se han consolidado y asignado ${newItems.length} productos únicos para contar hoy.`, 'success');
+            renderAssignTab();
+            renderBlocksTab();
+            showToast(`¡Excel cargado! ${newItems.length} productos asignados al Bloque ${targetBlock}.`, 'success');
+
+            // Avanzar el selector al siguiente bloque para facilitar la carga secuencial
+            const blockSelect = document.getElementById('excel-block-select');
+            if (blockSelect && targetBlock < 10) blockSelect.value = String(targetBlock + 1);
         } else {
             showToast('No se encontraron columnas de "Código" y "Nombre" en el archivo.', 'danger');
         }
@@ -1139,88 +1700,11 @@ function handleExcelUpload(event) {
     event.target.value = ''; // Reset input
 }
 
-function renderAdminCatalog(providerFilter) {
-    const tbody = document.getElementById('catalog-table-body');
-    tbody.innerHTML = '';
-    const searchTerm = document.getElementById('catalog-search').value.toLowerCase();
-
-    AppState.catalog.forEach(item => {
-        if (providerFilter !== 'all' && item.provider !== providerFilter) return;
-        if (searchTerm && !item.name.toLowerCase().includes(searchTerm) && !item.code.toLowerCase().includes(searchTerm)) return;
-
-        const isAssigned = AppState.todayTasks.some(t => t.id === item.id);
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>
-                <div class="custom-checkbox ${isAssigned ? 'checked' : ''}" onclick="toggleTaskAssignment('${item.id}', this)">
-                    <i data-lucide="check"></i>
-                </div>
-            </td>
-            <td>
-                <strong>${item.name}</strong><br>
-                <span class="product-code-tag">${item.code}</span>
-            </td>
-            <td><span class="provider-badge ${item.provider}">${item.provider}</span></td>
-            <td class="action-cell">
-                ${isAssigned ? `<button type="button" class="btn btn-danger btn-sm" onclick="deleteAssignedTask('${item.id}')"><i data-lucide="trash-2"></i> Eliminar</button>` : '<span class="text-muted">-</span>'}
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
-    lucide.createIcons();
-}
-
-function filterCatalogByProvider(provider, event) {
-    document.querySelectorAll('.provider-filter-pill').forEach(btn => btn.classList.remove('active'));
-    const button = event?.currentTarget || document.querySelector(`.provider-filter-pill[data-provider="${provider}"]`);
-    if (button) button.classList.add('active');
-    renderAdminCatalog(provider);
-}
-
-function handleCatalogSearch() {
-    renderAdminCatalog('all');
-}
-
-function toggleTaskAssignment(itemId, element) {
-    const idx = AppState.todayTasks.findIndex(t => t.id === itemId);
-    if (idx >= 0) {
-        AppState.todayTasks.splice(idx, 1);
-        element.classList.remove('checked');
-    } else {
-        const item = AppState.catalog.find(c => c.id === itemId);
-        AppState.todayTasks.push({...item}); 
-        element.classList.add('checked');
-    }
-    saveData();
-    updateAdminDashboard();
-    renderAdminCatalog('all');
-}
-
-function deleteAssignedTask(itemId) {
-    const idx = AppState.todayTasks.findIndex(t => t.id === itemId);
-    if (idx === -1) return;
-
-    AppState.todayTasks.splice(idx, 1);
-    AppState.counts = AppState.counts.filter(c => c.item.id !== itemId);
-    saveData();
-    renderAdminCatalog('all');
-    updateAdminDashboard();
-
-    if (USE_SUPABASE && supabaseClient && supabaseAvailable) {
-        pushTasksToSupabase().then(published => {
-            if (published) {
-                showToast('Tarea eliminada y sincronizada al trabajador.', 'success');
-            } else {
-                showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'warning');
-            }
-        });
-    } else if (USE_SUPABASE && supabaseClient && !supabaseAvailable) {
-        showToast('Tarea eliminada localmente. Supabase no está disponible por RLS/401.', 'warning');
-    } else {
-        showToast('Tarea eliminada localmente. Publica para sincronizar al trabajador.', 'success');
-    }
-}
+function renderAdminCatalog() { /* obsoleta — reemplazada por renderAssignTab */ }
+function filterCatalogByProvider() { /* obsoleta */ }
+function handleCatalogSearch() { /* obsoleta */ }
+function toggleTaskAssignment() { /* obsoleta */ }
+function deleteAssignedTask() { /* obsoleta — usar removeItemFromBlock */ }
 
 async function deleteSelectedTasks() {
     if (AppState.todayTasks.length === 0) {
@@ -1254,9 +1738,11 @@ async function deleteSelectedTasks() {
 
     AppState.todayTasks = [];
     AppState.counts = [];
+    AppState.blocks = {};
     saveData();
-    renderAdminCatalog('all');
+    renderAssignTab();
     updateAdminDashboard();
+    renderBlocksTab();
 
     if (USE_SUPABASE && supabaseClient) {
         const published = await pushTasksToSupabase();
@@ -1277,31 +1763,25 @@ async function deleteSelectedTasks() {
 }
 
 async function publishDailyTask() {
-    if (AppState.todayTasks.length === 0) {
-        showToast('Debes seleccionar productos para publicar.', 'danger');
+    const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+    if (!blockNums.length) {
+        showToast('No hay bloques cargados. Carga al menos un Excel primero.', 'danger');
         return;
     }
+
+    // Resumen de lo que se va a publicar
+    const blockSummary = blockNums.map(bn => `  • Bloque ${bn}: ${(AppState.blocks[bn] || []).length} productos`).join('\n');
 
     // Verificar si ya hay conteos activos en Supabase antes de sobrescribir
     if (USE_SUPABASE && supabaseClient && navigator.onLine) {
         try {
-            const { data: existingCounts, error: countErr } = await supabaseClient
-                .from('worker_counts')
-                .select('id', { count: 'exact', head: true });
-
-            if (!countErr && existingCounts !== null) {
-                // head:true devuelve null data pero el count está en la respuesta
-            }
-
-            // Re-query con count real
-            const { count, error: countErr2 } = await supabaseClient
+            const { count, error: countErr } = await supabaseClient
                 .from('worker_counts')
                 .select('*', { count: 'exact', head: true });
-
-            if (!countErr2 && count > 0) {
+            if (!countErr && count > 0) {
                 const proceed = confirm(
-                    `⚠️ Hay ${count} conteo(s) activos en curso del trabajador.\n\n` +
-                    'Publicar una nueva tarea borrará esos conteos sin guardarlos en el historial.\n\n' +
+                    `⚠️ Hay ${count} conteo(s) activos en curso.\n\n` +
+                    'Publicar nuevos bloques borrará esos conteos sin guardarlos en el historial.\n\n' +
                     '¿Deseas continuar de todas formas?'
                 );
                 if (!proceed) return;
@@ -1324,7 +1804,7 @@ async function publishDailyTask() {
         }
     }
 
-    showToast(`Tarea publicada: ${AppState.todayTasks.length} productos asignados al trabajador.`, 'success');
+    showToast(`✅ Publicado: ${blockNums.length} bloque(s), ${AppState.todayTasks.length} productos en total.`, 'success');
 }
 
 function updateAdminDashboard() {
@@ -1343,7 +1823,7 @@ function updateAdminDashboard() {
     monitorTbody.innerHTML = '';
 
     if(AppState.todayTasks.length === 0) {
-        monitorTbody.innerHTML = '<tr><td colspan="6" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
+        monitorTbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
     }
 
     AppState.counts.forEach(countInfo => {
@@ -1371,8 +1851,12 @@ function updateAdminDashboard() {
             valorHtml = `<span style="color:${diffValor>0?'#059669':'#ef4444'}; font-weight:bold; font-size:0.85rem">${fmtVal}</span>`;
         }
 
+        const blockLabel = countInfo.blockNum ? `<span class="block-badge-sm">B${countInfo.blockNum}</span>` : '-';
+        const workerLabel = countInfo.workerName || countInfo.workerEmail || '';
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
+            <td>${blockLabel}<br><span style="font-size:0.7rem;color:var(--text-muted)">${workerLabel}</span></td>
             <td><strong>${countInfo.item.name}</strong><br><span style="font-size:0.75rem">${countInfo.item.code}</span></td>
             <td>${emb}</td>
             <td>${expected}</td>
@@ -1634,6 +2118,7 @@ window.finishDay = async function() {
 
     AppState.counts = [];
     AppState.todayTasks = [];
+    AppState.blocks = {};
     saveData();
 
     if (USE_SUPABASE && supabaseClient) {
@@ -1650,6 +2135,8 @@ window.finishDay = async function() {
 
     renderAdminHistory();
     updateAdminDashboard();
+    renderAssignTab();
+    renderBlocksTab();
     showToast('Día finalizado. PDF generado, descargado y base de datos limpia.', 'success');
 }
 
@@ -1863,10 +2350,53 @@ function handleWorkerSearch() {
 function renderWorkerTasks() {
     const list = document.getElementById('worker-task-list');
     const emptyState = document.getElementById('worker-empty-state');
-    
-    const pendingCount = AppState.todayTasks.length - AppState.counts.length;
-    document.getElementById('w-stat-pending').textContent = pendingCount;
-    document.getElementById('w-stat-completed').textContent = AppState.counts.length;
+    const blockBanner = document.getElementById('worker-block-banner');
+
+    // Obtener las tareas de este worker según su bloque
+    let myTasks = AppState.todayTasks;
+    if (AppState.currentBlock) {
+        // Si los bloques no están en memoria pero hay tareas, reconstruirlos desde _blockNum
+        if (!Object.keys(AppState.blocks).length && AppState.todayTasks.length > 0) {
+            const rebuilt = {};
+            AppState.todayTasks.forEach(t => {
+                const bn = t._blockNum || 1;
+                if (!rebuilt[bn]) rebuilt[bn] = [];
+                rebuilt[bn].push(t);
+            });
+            AppState.blocks = rebuilt;
+        }
+        // Filtrar solo las tareas del bloque asignado
+        const blockItems = AppState.blocks[AppState.currentBlock] || [];
+        const blockIds = new Set(blockItems.map(t => t.id));
+        myTasks = AppState.todayTasks.filter(t => blockIds.has(t.id));
+
+        // Actualizar banner de bloque
+        if (blockBanner) {
+            blockBanner.style.display = 'flex';
+            const badge = document.getElementById('worker-block-badge');
+            const title = document.getElementById('worker-block-title');
+            const range = document.getElementById('worker-block-range');
+            const progressText = document.getElementById('worker-block-progress-text');
+            const progressBar = document.getElementById('worker-block-progress-bar');
+
+            if (badge) badge.textContent = `B${AppState.currentBlock}`;
+            if (title) title.textContent = `Bloque ${AppState.currentBlock}`;
+            if (range) range.textContent = `${myTasks.length} productos asignados`;
+
+            const counted = myTasks.filter(t => AppState.counts.find(c => c.item.id === t.id)).length;
+            const pct = myTasks.length > 0 ? Math.round((counted / myTasks.length) * 100) : 0;
+            if (progressText) progressText.textContent = `${counted} / ${myTasks.length}`;
+            if (progressBar) progressBar.style.width = `${pct}%`;
+        }
+    } else {
+        if (blockBanner) blockBanner.style.display = 'none';
+    }
+
+    const myCountedCount = myTasks.filter(t => AppState.counts.find(c => c.item.id === t.id)).length;
+    const myPendingCount = myTasks.length - myCountedCount;
+
+    document.getElementById('w-stat-pending').textContent = myPendingCount;
+    document.getElementById('w-stat-completed').textContent = myCountedCount;
     
     if (AppState.todayTasks.length === 0) {
         document.getElementById('worker-assigned-summary').textContent = 'No hay tareas cargadas.';
@@ -1875,10 +2405,22 @@ function renderWorkerTasks() {
         return;
     }
 
+    if (myTasks.length === 0 && AppState.currentBlock) {
+        document.getElementById('worker-assigned-summary').textContent = 'Esperando que el admin publique los bloques...';
+        list.innerHTML = `<div class="text-center py-4 text-muted" style="grid-column:1/-1; padding:2rem;">
+            <i data-lucide="clock" style="width:32px;height:32px;margin-bottom:8px;"></i>
+            <p>Tu bloque aún no tiene productos asignados. El admin publicará los bloques pronto.</p>
+        </div>`;
+        list.classList.remove('hidden');
+        emptyState.classList.add('hidden');
+        lucide.createIcons();
+        return;
+    }
+
     const searchInput = document.getElementById('worker-search');
     const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
 
-    const filteredTasks = AppState.todayTasks.filter(task => {
+    const filteredTasks = myTasks.filter(task => {
         if (!searchTerm) return true;
         return task.name.toLowerCase().includes(searchTerm) || task.code.toLowerCase().includes(searchTerm);
     });
@@ -1897,9 +2439,9 @@ function renderWorkerTasks() {
         return;
     }
 
-    document.getElementById('worker-assigned-summary').textContent = pendingCount === 0 
-        ? '¡Has terminado todo por hoy!' 
-        : `Tienes ${pendingCount} productos pendientes por revisar.`;
+    document.getElementById('worker-assigned-summary').textContent = myPendingCount === 0
+        ? '¡Has terminado todo tu bloque por hoy! 🎉' 
+        : `Tienes ${myPendingCount} productos pendientes en tu bloque.`;
 
     list.classList.remove('hidden');
     emptyState.classList.add('hidden');

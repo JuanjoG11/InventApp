@@ -893,3 +893,388 @@ select.input-form option {
         max-height: 50vh;
     }
 }
+
+
+/* ==========================================================================
+   SISTEMA DE BLOQUES — Estilos
+   ========================================================================== */
+
+/* ── Selector de bloque en login ── */
+.block-selector-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 10px;
+    margin-top: 0.5rem;
+}
+
+.block-select-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 12px 8px;
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-surface-hover, rgba(79,70,229,0.03));
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: var(--text-primary);
+    font-family: var(--font-primary);
+}
+
+.block-select-btn:hover {
+    border-color: var(--color-primary);
+    background: var(--color-primary-glow);
+    transform: translateY(-2px);
+}
+
+.block-select-btn.selected {
+    border-color: var(--color-primary);
+    background: var(--color-primary);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(79,70,229,0.35);
+    transform: translateY(-2px);
+}
+
+.block-num {
+    font-size: 1.4rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.block-item-count {
+    font-size: 0.7rem;
+    opacity: 0.8;
+    text-align: center;
+}
+
+/* ── Banner de bloque activo (worker) ── */
+.worker-block-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: linear-gradient(135deg, var(--color-primary), #7c3aed);
+    border-radius: 14px;
+    padding: 14px 18px;
+    margin-bottom: 0.75rem;
+    color: #fff;
+    flex-wrap: wrap;
+}
+
+.block-banner-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.block-number-badge {
+    width: 52px;
+    height: 52px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    font-weight: 800;
+    border: 2px solid rgba(255,255,255,0.4);
+    flex-shrink: 0;
+}
+
+.block-banner-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    display: block;
+}
+
+.block-banner-sub {
+    font-size: 0.8rem;
+    opacity: 0.85;
+    display: block;
+}
+
+.block-banner-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+/* ── Tab Bloques: overview cards del admin ── */
+.blocks-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 14px;
+}
+
+.block-overview-card {
+    background: var(--bg-surface-hover, rgba(79,70,229,0.03));
+    border: 1.5px solid var(--border-color);
+    border-radius: 14px;
+    padding: 16px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.block-overview-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: 0 4px 16px var(--color-primary-glow);
+}
+
+.block-overview-card.block-done {
+    border-color: var(--color-success);
+    background: rgba(16,185,129,0.05);
+}
+
+.block-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.block-badge {
+    background: var(--color-primary);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 20px;
+}
+
+.block-card-count {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.block-card-progress-bar {
+    height: 6px;
+    background: var(--border-color);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.block-card-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-accent));
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+
+.block-overview-card.block-done .block-card-progress-fill {
+    background: linear-gradient(90deg, var(--color-success), #34d399);
+}
+
+.block-card-footer {
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.block-card-products {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.block-product-chip {
+    font-size: 0.68rem;
+    background: var(--border-color);
+    border-radius: 6px;
+    padding: 2px 7px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+/* ── Panel de avance en tiempo real por bloque ── */
+.blocks-live-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.block-live-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px 16px;
+    border: 1.5px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-surface-hover, transparent);
+    transition: border-color 0.2s;
+    flex-wrap: wrap;
+}
+
+.block-live-row.block-live-done {
+    border-color: var(--color-success);
+    background: rgba(16,185,129,0.05);
+}
+
+.block-live-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 160px;
+}
+
+.block-badge-sm {
+    background: var(--color-primary);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 16px;
+    white-space: nowrap;
+}
+
+.block-live-workers {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.block-live-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 140px;
+}
+
+.block-live-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.block-live-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-accent));
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+.block-live-row.block-live-done .block-live-fill {
+    background: linear-gradient(90deg, var(--color-success), #34d399);
+}
+
+.block-live-pct {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    min-width: 80px;
+    text-align: right;
+}
+
+/* ── Dark theme overrides para bloques ── */
+.dark-theme .block-select-btn {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.1);
+    color: #f1f5f9;
+}
+
+.dark-theme .block-select-btn:hover {
+    border-color: var(--color-primary);
+    background: rgba(79,70,229,0.15);
+}
+
+.dark-theme .block-select-btn.selected {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+}
+
+.dark-theme .block-overview-card,
+.dark-theme .block-live-row {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+}
+
+.dark-theme .block-overview-card:hover {
+    border-color: var(--color-primary);
+}
+
+.dark-theme .block-product-chip {
+    background: rgba(255,255,255,0.08);
+    color: #cbd5e1;
+}
+
+.dark-theme .block-card-progress-bar,
+.dark-theme .block-live-bar {
+    background: rgba(255,255,255,0.08);
+}
+
+
+/* ==========================================================================
+   TAB ASIGNAR — Resumen de bloques cargados
+   ========================================================================== */
+
+.assign-blocks-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+}
+
+.assign-block-card {
+    background: var(--bg-surface-hover, rgba(79,70,229,0.03));
+    border: 1.5px solid var(--border-color);
+    border-radius: 14px;
+    padding: 16px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    cursor: default;
+}
+
+.assign-block-card:hover {
+    border-color: var(--color-primary);
+    box-shadow: 0 4px 16px var(--color-primary-glow);
+}
+
+.assign-block-card.block-done {
+    border-color: var(--color-success);
+    background: rgba(16,185,129,0.05);
+}
+
+.assign-block-card.active-detail {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-glow);
+}
+
+.assign-block-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.assign-block-count {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.assign-block-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+/* Dark theme */
+.dark-theme .assign-block-card {
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+}
+
+.dark-theme .assign-block-card:hover,
+.dark-theme .assign-block-card.active-detail {
+    border-color: var(--color-primary);
+}
