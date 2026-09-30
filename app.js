@@ -12,11 +12,12 @@ const AppState = {
     catalog: [],
     todayTasks: [],          // todos los productos del día
     blocks: {},              // { 1: [items...], 2: [items...], ... }  distribución por bloque
-    numBlocks: 5,            // cantidad de bloques configurada por el admin
+    numBlocks: 0,            // cantidad de bloques activos
     counts: [],
     history: [],
     pendingSync: { tasks: [], history: [], counts: [] },
-    isOnline: true
+    isOnline: true,
+    unpublishedChanges: false  // true cuando el admin cargó bloques pero aún no publicó
 };
 
 const SUPABASE_URL = 'https://yvysbuirvpfcngviwybh.supabase.co';
@@ -830,6 +831,17 @@ async function fetchLatestTasks() {
     if (data?.length > 0) {
         const latest = data[0];
         if (Array.isArray(latest.payload) && latest.payload.length > 0) {
+
+            // Si el admin tiene cambios locales sin publicar, NO sobreescribimos sus bloques
+            if (AppState.currentRole === 'admin' && AppState.unpublishedChanges) {
+                // Solo cargamos los conteos, no tocamos blocks/todayTasks
+                if (AppState.currentRole === 'admin') {
+                    await fetchWorkerCounts();
+                    await fetchHistoryFromSupabase();
+                }
+                return;
+            }
+
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
 
             // Restaurar bloques desde campo 'blocks'; fallback por _blockNum
@@ -846,16 +858,20 @@ async function fetchLatestTasks() {
             }
             AppState.numBlocks = latest.numBlocks || Object.keys(AppState.blocks).length || 0;
         } else {
-            // Payload vacío → admin limpió el día
+            // Payload vacío → admin limpió el día (solo si no tiene cambios locales)
+            if (!AppState.unpublishedChanges) {
+                AppState.todayTasks = [];
+                AppState.blocks = {};
+                AppState.counts = [];
+            }
+        }
+    } else {
+        // No hay publicación activa hoy → limpiar estado local (solo si no tiene cambios locales)
+        if (!AppState.unpublishedChanges) {
             AppState.todayTasks = [];
             AppState.blocks = {};
             AppState.counts = [];
         }
-    } else {
-        // No hay publicación activa hoy → limpiar estado local
-        AppState.todayTasks = [];
-        AppState.blocks = {};
-        AppState.counts = [];
     }
 
     saveData();
@@ -1690,6 +1706,7 @@ function handleExcelUpload(event) {
 
             // todayTasks = unión de todos los bloques (fuente de verdad para el resto del sistema)
             rebuildTodayTasksFromBlocks();
+            AppState.unpublishedChanges = true;  // hay cambios locales sin publicar
 
             saveData();
             renderAssignTab();
@@ -1804,11 +1821,15 @@ async function publishDailyTask() {
     if (USE_SUPABASE && supabaseClient) {
         const published = await pushTasksToSupabase();
         if (!published) return;
+        AppState.unpublishedChanges = false;  // ya publicado
+        saveData();
         try {
             await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
         } catch (e) {
             console.warn('Error al borrar conteos activos en Supabase al publicar:', e);
         }
+    } else {
+        AppState.unpublishedChanges = false;
     }
 
     showToast(`✅ Publicado: ${blockNums.length} bloque(s), ${AppState.todayTasks.length} productos en total.`, 'success');
@@ -2189,6 +2210,11 @@ window.finishBlock = async function(blockNum) {
     AppState.counts = AppState.counts.filter(c => !blockTaskIds.has(c.item.id));
     delete AppState.blocks[blockNum];
     rebuildTodayTasksFromBlocks();
+
+    // Si no quedan bloques activos, limpiar flag
+    if (Object.keys(AppState.blocks).length === 0) {
+        AppState.unpublishedChanges = false;
+    }
     saveData();
 
     // Borrar conteos de este bloque en Supabase
@@ -2217,13 +2243,29 @@ window.finishBlock = async function(blockNum) {
 
 // Finalizar día: guardar en historial y generar PDF
 window.finishDay = async function() {
-    if (AppState.todayTasks.length === 0) {
-        showToast('No hay productos asignados para finalizar.', 'danger');
+    const blockNums = Object.keys(AppState.blocks).map(Number);
+    if (!blockNums.length && AppState.todayTasks.length === 0) {
+        showToast('No hay bloques activos para finalizar.', 'danger');
         return;
     }
 
-    // Antes de cerrar: traer los conteos más recientes de Supabase para que el PDF
-    // incluya lo que los workers hayan enviado (incluso desde otros dispositivos).
+    // Advertir si quedan bloques sin finalizar individualmente
+    if (blockNums.length > 0) {
+        const pending = blockNums.filter(bn => {
+            const items = AppState.blocks[bn] || [];
+            return items.length > 0;
+        });
+        if (pending.length > 0) {
+            const ok = confirm(
+                `⚠️ Aún quedan ${pending.length} bloque(s) sin finalizar: B${pending.join(', B')}.\n\n` +
+                'Esto finalizará TODOS los bloques restantes de una vez y generará un solo PDF.\n\n' +
+                '¿Deseas continuar? (Recomendado: usa "Finalizar Bloque" en el Monitor por cada bloque)'
+            );
+            if (!ok) return;
+        }
+    }
+
+    // Antes de cerrar: traer los conteos más recientes de Supabase
     if (USE_SUPABASE && supabaseClient && navigator.onLine) {
         showToast('Obteniendo conteos actualizados antes de cerrar el día...', 'info');
         try {
@@ -2341,6 +2383,7 @@ window.finishDay = async function() {
     AppState.counts = [];
     AppState.todayTasks = [];
     AppState.blocks = {};
+    AppState.unpublishedChanges = false;
     saveData();
 
     if (USE_SUPABASE && supabaseClient) {
