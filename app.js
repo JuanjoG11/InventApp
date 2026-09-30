@@ -117,7 +117,7 @@ async function showBlockLogin() {
 async function renderBlockSelector() {
     const grid = document.getElementById('block-selector-grid');
     const noTasksMsg = document.getElementById('block-no-tasks-msg');
-    grid.innerHTML = '<div class="text-muted" style="text-align:center;padding:1rem;">Cargando bloques...</div>';
+    grid.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:1.5rem 0; color:rgba(255,255,255,0.45); font-size:0.85rem;">⏳ Cargando bloques...</div>';
 
     let blocksData = {};   // { 1: [...items], 2: [...items] }
 

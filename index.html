@@ -65,16 +65,16 @@
 
         <!-- PASO 2: Login auxiliar por bloque (sin cuenta) -->
         <div id="login-step-block" class="login-panel glass-panel login-panel-large" style="display:none;">
-            <div class="login-header login-header-centered">
+            <div class="login-header login-header-centered" style="margin-bottom:1.25rem;">
                 <img src="logo.png" alt="InventApp" class="login-logo" onerror="this.onerror=null; this.src='icon-192.png';">
                 <h2>Seleccionar Bloque</h2>
-                <p style="color:var(--text-muted); margin-top:4px; font-size:0.9rem;">Ingresa tu nombre y elige tu bloque asignado</p>
+                <p style="color:rgba(255,255,255,0.55); margin-top:2px; font-size:0.85rem;">Ingresa tu nombre y elige tu bloque</p>
             </div>
             <div class="form-group">
                 <label class="input-label" for="block-worker-name">Tu nombre</label>
-                <input id="block-worker-name" class="input-form" type="text" placeholder="Ej: María García" required>
+                <input id="block-worker-name" class="input-form" type="text" placeholder="Ej: María García" autocomplete="name">
             </div>
-            <div class="form-group" style="margin-top:1rem;">
+            <div class="form-group" style="margin-top:0.875rem;">
                 <label class="input-label">Selecciona tu bloque</label>
                 <div id="block-selector-grid" class="block-selector-grid">
                     <!-- Se renderiza dinámicamente según bloques publicados -->
@@ -83,7 +83,7 @@
                     <i data-lucide="clock"></i> El administrador aún no ha publicado bloques para hoy.
                 </p>
             </div>
-            <div style="display:flex; gap:0.75rem; margin-top:1.5rem;">
+            <div style="display:flex; gap:0.75rem; margin-top:1.25rem;">
                 <button class="btn btn-secondary" onclick="showCredentialsLogin()" style="flex:1;">
                     <i data-lucide="arrow-left"></i> Volver
                 </button>

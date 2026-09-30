@@ -108,8 +108,14 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
+    padding: 1rem;
     background: linear-gradient(180deg, rgba(5, 12, 28, 0.96) 0%, rgba(10, 17, 40, 1) 100%);
+}
+
+@media (min-width: 480px) {
+    .login-screen {
+        padding: 1.5rem;
+    }
 }
 
 .login-panel {
@@ -125,7 +131,51 @@ body {
 .login-panel-large {
     width: min(100%, 560px);
     max-width: 620px;
-    padding: 3rem 2.5rem;
+    padding: 1.75rem 1.25rem;
+}
+
+@media (min-width: 480px) {
+    .login-panel-large {
+        padding: 2.25rem 2rem;
+    }
+}
+
+/* En el panel de selección de bloque, el label del input y el mensaje
+   deben ser visibles sobre fondo muy oscuro */
+#login-step-block .input-label {
+    color: rgba(255,255,255,0.75);
+}
+
+#login-step-block .input-form {
+    background: rgba(255,255,255,0.1);
+    border-color: rgba(255,255,255,0.2);
+    color: #fff;
+}
+
+#login-step-block .input-form::placeholder {
+    color: rgba(255,255,255,0.4);
+}
+
+#login-step-block .input-form:focus {
+    border-color: var(--color-primary);
+    background: rgba(255,255,255,0.14);
+}
+
+/* Mensaje "sin bloques publicados" */
+#block-no-tasks-msg {
+    color: rgba(255,255,255,0.5);
+    font-size: 0.88rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+/* "Selecciona tu bloque" label */
+#login-step-block .form-group > .input-label {
+    color: rgba(255,255,255,0.75);
+    margin-bottom: 8px;
+    display: block;
 }
 .login-header {
     margin-bottom: 2rem;
@@ -137,18 +187,18 @@ body {
 }
 .login-header-centered h2 {
     color: #ffffff;
-    font-size: clamp(2rem, 3vw, 2.8rem);
+    font-size: clamp(1.5rem, 5vw, 2.4rem);
     text-align: center;
-    line-height: 1.05;
+    line-height: 1.1;
     letter-spacing: -0.5px;
     margin: 0;
 }
 .login-logo {
-    width: 140px;
-    height: 140px;
+    width: clamp(80px, 22vw, 130px);
+    height: clamp(80px, 22vw, 130px);
     object-fit: contain;
-    border-radius: 24px;
-    box-shadow: 0 24px 60px rgba(0,0,0,0.25);
+    border-radius: 20px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.25);
 }
 .login-help { margin-top: 1rem; color: var(--text-secondary); font-size: 0.9rem; }
 .btn-block { width: 100%; }
@@ -902,9 +952,21 @@ select.input-form option {
 /* ── Selector de bloque en login ── */
 .block-selector-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 10px;
     margin-top: 0.5rem;
+}
+
+@media (min-width: 400px) {
+    .block-selector-grid {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+@media (min-width: 540px) {
+    .block-selector-grid {
+        grid-template-columns: repeat(5, 1fr);
+    }
 }
 
 .block-select-btn {
@@ -913,34 +975,47 @@ select.input-form option {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    padding: 12px 8px;
-    border: 2px solid var(--border-color);
+    padding: 12px 6px;
+    border: 2px solid rgba(255,255,255,0.2);
     border-radius: 12px;
-    background: var(--bg-surface-hover, rgba(79,70,229,0.03));
+    background: rgba(255,255,255,0.07);
     cursor: pointer;
-    transition: all 0.2s ease;
-    color: var(--text-primary);
+    transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    color: #f1f5f9;
     font-family: var(--font-primary);
+    min-height: 64px;
+    width: 100%;
+}
+
+.block-select-btn:active {
+    transform: scale(0.96);
 }
 
 .block-select-btn:hover {
     border-color: var(--color-primary);
-    background: var(--color-primary-glow);
-    transform: translateY(-2px);
+    background: rgba(79,70,229,0.25);
 }
 
 .block-select-btn.selected {
     border-color: var(--color-primary);
     background: var(--color-primary);
     color: #fff;
-    box-shadow: 0 4px 14px rgba(79,70,229,0.35);
-    transform: translateY(-2px);
+    box-shadow: 0 4px 14px rgba(79,70,229,0.45);
 }
 
 .block-num {
-    font-size: 1.4rem;
+    font-size: 1.25rem;
     font-weight: 800;
     line-height: 1;
+    color: inherit;
+}
+
+.block-item-count {
+    font-size: 0.62rem;
+    opacity: 0.9;
+    text-align: center;
+    line-height: 1.2;
+    color: inherit;
 }
 
 .block-item-count {
