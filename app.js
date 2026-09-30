@@ -1380,14 +1380,16 @@ function renderAssignTab() {
 function showBlockDetail(blockNum) {
     currentDetailBlock = blockNum;
     const detail = document.getElementById('assign-block-detail');
-    if (detail) detail.style.display = '';
+    if (detail) detail.style.display = 'block';
 
-    // Resaltar la tarjeta activa
-    document.querySelectorAll('.assign-block-card').forEach(c => c.classList.remove('active-detail'));
-    const cards = document.querySelectorAll('.assign-block-card');
-    const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
-    const idx = blockNums.indexOf(blockNum);
-    if (cards[idx]) cards[idx].classList.add('active-detail');
+    // Resaltar la tarjeta activa — esperar al siguiente tick para que el DOM esté listo
+    requestAnimationFrame(() => {
+        document.querySelectorAll('.assign-block-card').forEach(c => c.classList.remove('active-detail'));
+        const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+        const idx = blockNums.indexOf(Number(blockNum));
+        const cards = document.querySelectorAll('.assign-block-card');
+        if (cards[idx]) cards[idx].classList.add('active-detail');
+    });
 
     renderBlockDetail();
 }
@@ -1592,6 +1594,11 @@ function switchAdminTab(tabId) {
     const activeContent = document.getElementById(`admin-tab-${tabId}`);
     activeContent.style.display = 'block';
     setTimeout(() => activeContent.classList.add('active'), 50);
+
+    // Re-renderizar el contenido del tab al activarlo
+    if (tabId === 'assign') renderAssignTab();
+    if (tabId === 'blocks') renderBlocksTab();
+    if (tabId === 'monitor') updateAdminDashboard();
 }
 
 // --- Lógica ADMIN ---
@@ -1811,7 +1818,7 @@ function updateAdminDashboard() {
     document.getElementById('admin-metric-assigned').textContent = AppState.todayTasks.length;
     const countedTasks = AppState.counts.length;
     const progressPerc = AppState.todayTasks.length > 0 ? Math.round((countedTasks / AppState.todayTasks.length) * 100) : 0;
-    
+
     document.getElementById('admin-metric-progress').textContent = `${progressPerc}%`;
     document.getElementById('admin-progress-bar').style.width = `${progressPerc}%`;
     document.getElementById('admin-metric-progress-subtitle').textContent = `${countedTasks} de ${AppState.todayTasks.length} contados`;
@@ -1819,72 +1826,158 @@ function updateAdminDashboard() {
     let totalAverias = 0;
     let grandDiffUds = 0;
     let grandDiffValor = 0;
-    const monitorTbody = document.getElementById('live-detail-table-body');
-    monitorTbody.innerHTML = '';
 
-    if(AppState.todayTasks.length === 0) {
-        monitorTbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No se han publicado tareas para hoy.</td></tr>';
+    // ── Renderizar tabla agrupada por bloques ──
+    const monitorContainer = document.getElementById('monitor-blocks-container');
+    if (monitorContainer) {
+        monitorContainer.innerHTML = '';
+
+        const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
+
+        if (!blockNums.length) {
+            monitorContainer.innerHTML = '<p class="text-muted text-center" style="padding:2rem;">No se han publicado bloques para hoy.</p>';
+        } else {
+            blockNums.forEach(bn => {
+                const blockItems = AppState.blocks[bn] || [];
+                // Conteos de ESTE bloque
+                const blockCounts = AppState.counts.filter(c =>
+                    blockItems.some(t => t.id === c.item.id)
+                );
+                const countedInBlock = blockCounts.length;
+                const totalInBlock = blockItems.length;
+                const pct = totalInBlock > 0 ? Math.round((countedInBlock / totalInBlock) * 100) : 0;
+                const allDone = countedInBlock === totalInBlock && totalInBlock > 0;
+
+                // Auxiliares que contaron en este bloque
+                const workers = [...new Set(blockCounts.map(c => c.workerName || c.workerEmail || 'Auxiliar').filter(Boolean))];
+
+                // Acumular totales globales
+                let blockDiffUds = 0, blockDiffValor = 0, blockAverias = 0;
+                blockCounts.forEach(c => {
+                    const emb = c.item.embalaje || 1;
+                    const total = (parseInt(c.cajas) * emb) + parseInt(c.unidades);
+                    const diff = total - (c.item.expectedStock || 0);
+                    blockDiffUds += diff;
+                    blockDiffValor += diff * (c.item.precio || 0);
+                    blockAverias += parseInt(c.averias) || 0;
+                });
+                grandDiffUds += blockDiffUds;
+                grandDiffValor += blockDiffValor;
+                totalAverias += blockAverias;
+
+                // Construir sección de bloque
+                const section = document.createElement('div');
+                section.className = `monitor-block-section ${allDone ? 'monitor-block-done' : ''}`;
+                section.style.marginBottom = '1.25rem';
+
+                const fmtBlockValor = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(blockDiffValor);
+
+                section.innerHTML = `
+                    <div class="monitor-block-header">
+                        <div class="monitor-block-info">
+                            <span class="block-badge">Bloque ${bn}</span>
+                            <span class="monitor-block-worker">${workers.length ? workers.join(', ') : '<em style="color:var(--text-muted)">Sin auxiliar aún</em>'}</span>
+                            <span class="monitor-block-progress-text">${countedInBlock}/${totalInBlock} · ${pct}%</span>
+                        </div>
+                        <div class="monitor-block-actions">
+                            ${allDone
+                                ? `<button class="btn btn-success btn-sm" onclick="finishBlock(${bn})">
+                                       <i data-lucide="file-check"></i> Finalizar Bloque ${bn}
+                                   </button>`
+                                : `<span class="text-muted" style="font-size:0.8rem;">Esperando conteos...</span>`
+                            }
+                        </div>
+                    </div>
+                    <div class="monitor-block-bar">
+                        <div class="monitor-block-fill" style="width:${pct}%"></div>
+                    </div>
+                    <div class="table-responsive" style="margin-top:0.5rem;">
+                        <table class="data-table" id="monitor-block-table-${bn}">
+                            <thead>
+                                <tr>
+                                    <th>Producto</th>
+                                    <th>Emb.</th>
+                                    <th>Inv.</th>
+                                    <th>Contado</th>
+                                    <th>Descuadre ($)</th>
+                                    <th>Averías</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                `;
+                monitorContainer.appendChild(section);
+
+                // Llenar la tabla de este bloque
+                const tbody = section.querySelector('tbody');
+                if (blockCounts.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding:0.75rem;">Sin conteos aún</td></tr>`;
+                } else {
+                    blockCounts.forEach(countInfo => {
+                        const emb = countInfo.item.embalaje || 1;
+                        const prec = countInfo.item.precio || 0;
+                        const totalContado = (parseInt(countInfo.cajas) * emb) + parseInt(countInfo.unidades);
+                        const expected = countInfo.item.expectedStock || 0;
+                        const diffUds = totalContado - expected;
+                        const diffValor = diffUds * prec;
+
+                        let diffHtml = diffUds !== 0
+                            ? `<br><span style="color:${diffUds>0?'#059669':'#ef4444'};font-size:0.75rem">${diffUds>0?'+':''}${diffUds} uds</span>`
+                            : '';
+                        let valorHtml = '-';
+                        if (diffValor !== 0) {
+                            const fv = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor);
+                            valorHtml = `<span style="color:${diffValor>0?'#059669':'#ef4444'};font-weight:bold;font-size:0.85rem">${fv}</span>`;
+                        }
+
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td><strong>${countInfo.item.name}</strong><br><span style="font-size:0.72rem;color:var(--text-muted)">${countInfo.item.code || ''}</span></td>
+                            <td>${emb}</td>
+                            <td>${expected}</td>
+                            <td><strong>${totalContado}</strong>${diffHtml}</td>
+                            <td>${valorHtml}</td>
+                            <td class="${countInfo.averias > 0 ? 'text-red' : ''}"><strong>${countInfo.averias}</strong></td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+            });
+        }
+        lucide.createIcons();
     }
 
-    AppState.counts.forEach(countInfo => {
-        totalAverias += parseInt(countInfo.averias) || 0;
-        
-        const emb = countInfo.item.embalaje || 1;
-        const prec = countInfo.item.precio || 0;
-        const totalContado = (parseInt(countInfo.cajas) * emb) + parseInt(countInfo.unidades);
-        const expected = countInfo.item.expectedStock || 0;
-        
-        const diffUds = totalContado - expected;
-        const diffValor = diffUds * prec;
-
-        grandDiffUds += diffUds;
-        grandDiffValor += diffValor;
-
-        let diffHtml = '';
-        if(diffUds !== 0) {
-            diffHtml = `<br><span style="color:${diffUds>0?'#059669':'#ef4444'}; font-size:0.75rem">${diffUds>0?'+':''}${diffUds} uds</span>`;
-        }
-        
-        let valorHtml = '-';
-        if(diffValor !== 0) {
-            const fmtVal = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor);
-            valorHtml = `<span style="color:${diffValor>0?'#059669':'#ef4444'}; font-weight:bold; font-size:0.85rem">${fmtVal}</span>`;
-        }
-
-        const blockLabel = countInfo.blockNum ? `<span class="block-badge-sm">B${countInfo.blockNum}</span>` : '-';
-        const workerLabel = countInfo.workerName || countInfo.workerEmail || '';
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${blockLabel}<br><span style="font-size:0.7rem;color:var(--text-muted)">${workerLabel}</span></td>
-            <td><strong>${countInfo.item.name}</strong><br><span style="font-size:0.75rem">${countInfo.item.code}</span></td>
-            <td>${emb}</td>
-            <td>${expected}</td>
-            <td><strong>${totalContado}</strong> ${diffHtml}</td>
-            <td>${valorHtml}</td>
-            <td class="${countInfo.averias > 0 ? 'text-red' : ''}"><strong>${countInfo.averias}</strong></td>
-        `;
-        monitorTbody.appendChild(tr);
-    });
-
+    // ── Métricas superiores ──
     document.getElementById('admin-metric-alerts').textContent = totalAverias;
-
-    // Update monitor totals bar
     const fmtGrandValor = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(grandDiffValor);
     const diffUdsEl = document.getElementById('monitor-total-diff-uds');
     const diffValorEl = document.getElementById('monitor-total-diff-valor');
     const averiasEl = document.getElementById('monitor-total-averias');
-    
-    if (diffUdsEl) {
-        diffUdsEl.textContent = (grandDiffUds > 0 ? '+' : '') + grandDiffUds;
-        diffUdsEl.style.color = grandDiffUds === 0 ? '' : (grandDiffUds > 0 ? '#059669' : '#ef4444');
-    }
-    if (diffValorEl) {
-        diffValorEl.textContent = fmtGrandValor;
-        diffValorEl.style.color = grandDiffValor === 0 ? '' : (grandDiffValor > 0 ? '#059669' : '#ef4444');
-    }
-    if (averiasEl) {
-        averiasEl.textContent = totalAverias;
+    if (diffUdsEl) { diffUdsEl.textContent = (grandDiffUds > 0 ? '+' : '') + grandDiffUds; diffUdsEl.style.color = grandDiffUds === 0 ? '' : (grandDiffUds > 0 ? '#059669' : '#ef4444'); }
+    if (diffValorEl) { diffValorEl.textContent = fmtGrandValor; diffValorEl.style.color = grandDiffValor === 0 ? '' : (grandDiffValor > 0 ? '#059669' : '#ef4444'); }
+    if (averiasEl) averiasEl.textContent = totalAverias;
+
+    // ── Botón "Finalizar Día Completo" solo si todos los bloques están listos ──
+    const blockNums = Object.keys(AppState.blocks).map(Number);
+    const allBlocksDone = blockNums.length > 0 && blockNums.every(bn => {
+        const items = AppState.blocks[bn] || [];
+        return items.length > 0 && items.every(t => AppState.counts.find(c => c.item.id === t.id));
+    });
+    const btnFinishAll = document.getElementById('btn-finish-all');
+    const pendingBadge = document.getElementById('monitor-blocks-pending-badge');
+    const pendingBlocks = blockNums.filter(bn => {
+        const items = AppState.blocks[bn] || [];
+        return !items.every(t => AppState.counts.find(c => c.item.id === t.id));
+    });
+    if (btnFinishAll) btnFinishAll.style.display = blockNums.length > 0 ? '' : 'none';
+    if (pendingBadge) {
+        if (pendingBlocks.length > 0) {
+            pendingBadge.style.display = '';
+            pendingBadge.textContent = `${pendingBlocks.length} bloque(s) sin completar`;
+        } else {
+            pendingBadge.style.display = 'none';
+        }
     }
 }
 
@@ -1903,14 +1996,19 @@ function applyHistoryFilters() {
 
     function parseHistoryDate(dateStr) {
         if (!dateStr) return null;
+        // Formato Supabase: yyyy-mm-dd → ya está listo
+        if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+            return dateStr.slice(0, 10);
+        }
+        // Formato local es-CO: d/m/yyyy o dd/mm/yyyy
         const parts = dateStr.split('/');
         if (parts.length === 3) {
-            const d = parts[0].padStart(2, '0');
-            const m = parts[1].padStart(2, '0');
+            const d = String(parts[0]).padStart(2, '0');
+            const m = String(parts[1]).padStart(2, '0');
             const y = parts[2];
             return `${y}-${m}-${d}`;
         }
-        return dateStr;
+        return null;
     }
 
     let filtered = AppState.history.filter(rec => {
@@ -1992,6 +2090,130 @@ function clearAllHistory() {
         showToast('Historial borrado', 'success');
     }
 }
+
+// ── Finalizar un bloque individual ──
+window.finishBlock = async function(blockNum) {
+    const blockItems = AppState.blocks[blockNum] || [];
+    if (!blockItems.length) {
+        showToast(`El Bloque ${blockNum} no tiene productos.`, 'danger');
+        return;
+    }
+
+    // Verificar que todos los productos del bloque estén contados
+    const uncounted = blockItems.filter(t => !AppState.counts.find(c => c.item.id === t.id));
+    if (uncounted.length > 0) {
+        const proceed = confirm(
+            `⚠️ El Bloque ${blockNum} tiene ${uncounted.length} producto(s) sin contar.\n\n` +
+            'Los productos sin conteo quedarán en 0.\n\n¿Deseas finalizar el bloque igualmente?'
+        );
+        if (!proceed) return;
+    }
+
+    // Traer conteos frescos de Supabase para este bloque antes de cerrar
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        try {
+            const taskIds = blockItems.map(t => t.id);
+            const { data: freshCounts, error } = await supabaseClient
+                .from('worker_counts')
+                .select('*')
+                .in('task_id', taskIds);
+            if (!error && freshCounts?.length) {
+                freshCounts.forEach(record => {
+                    const idx = AppState.counts.findIndex(c => c.item?.id === record.task_id);
+                    const entry = {
+                        item: record.item || { id: record.task_id },
+                        cajas: record.cajas,
+                        unidades: record.unidades,
+                        averias: record.averias,
+                        workerName: record.worker_name,
+                        workerEmail: record.worker_email,
+                        blockNum: record.block_num
+                    };
+                    if (idx >= 0) AppState.counts[idx] = entry;
+                    else AppState.counts.push(entry);
+                });
+            }
+        } catch (e) {
+            console.warn('Error obteniendo conteos frescos del bloque:', e);
+        }
+    }
+
+    const dateStr = new Date().toLocaleDateString('es-CO');
+    const dateFile = new Date().toISOString().slice(0, 10);
+
+    // Construir records solo del bloque
+    const blockRecords = blockItems.map(item => {
+        const countEntry = AppState.counts.find(c => c.item.id === item.id);
+        const cajas    = countEntry ? parseInt(countEntry.cajas)    || 0 : 0;
+        const unidades = countEntry ? parseInt(countEntry.unidades) || 0 : 0;
+        const averias  = countEntry ? parseInt(countEntry.averias)  || 0 : 0;
+        const emb = item.embalaje || 1;
+        const totalContado = (cajas * emb) + unidades;
+        const diff = totalContado - (item.expectedStock || 0);
+        const diffValor = diff * (item.precio || 0);
+        const fmtVal = diffValor !== 0
+            ? new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor)
+            : '-';
+        const record = {
+            date: dateStr,
+            name: item.name,
+            code: item.code,
+            provider: item.provider,
+            embalaje: emb,
+            precio: item.precio || 0,
+            expectedStock: item.expectedStock || 0,
+            cajas, unidades, totalContado,
+            diffUds: diff, diffValorRaw: diffValor,
+            descuadreFormateado: fmtVal, averias,
+            blockNum
+        };
+        AppState.history.push(record);
+        return record;
+    });
+
+    // PDF y Excel del bloque
+    try {
+        generatePDF(blockRecords, dateStr, `${dateFile}_B${blockNum}`, `Bloque ${blockNum}`);
+    } catch (e) {
+        console.warn('Error generando PDF del bloque:', e);
+        showToast('Error al generar PDF. Revisa la consola.', 'danger');
+    }
+    await generateExcel(blockRecords, `${dateFile}_B${blockNum}`);
+
+    if (USE_SUPABASE) {
+        await pushHistoryToSupabase(blockRecords);
+    }
+
+    // Limpiar solo este bloque del estado
+    const blockTaskIds = new Set(blockItems.map(t => t.id));
+    AppState.counts = AppState.counts.filter(c => !blockTaskIds.has(c.item.id));
+    delete AppState.blocks[blockNum];
+    rebuildTodayTasksFromBlocks();
+    saveData();
+
+    // Borrar conteos de este bloque en Supabase
+    if (USE_SUPABASE && supabaseClient) {
+        try {
+            await supabaseClient
+                .from('worker_counts')
+                .delete()
+                .in('task_id', [...blockTaskIds]);
+        } catch (e) {
+            console.warn('Error borrando conteos del bloque en Supabase:', e);
+        }
+    }
+
+    // Actualizar publicación (el bloque desaparece para los auxiliares)
+    if (USE_SUPABASE && supabaseClient) {
+        await pushTasksToSupabase();
+    }
+
+    renderAdminHistory();
+    updateAdminDashboard();
+    renderAssignTab();
+    renderBlocksTab();
+    showToast(`✅ Bloque ${blockNum} finalizado. PDF y Excel generados.`, 'success');
+};
 
 // Finalizar día: guardar en historial y generar PDF
 window.finishDay = async function() {
@@ -2144,7 +2366,7 @@ function getJsPDFCtor() {
     return window.jsPDF || window.jspdf?.jsPDF || window.jspdf || null;
 }
 
-function generatePDF(records, dateStr, dateFile) {
+function generatePDF(records, dateStr, dateFile, blockLabel) {
     const jsPDFCtor = getJsPDFCtor();
     if (!jsPDFCtor) {
         showToast('No se pudo cargar la librería jsPDF. Abre la app desde un servidor HTTP o revisa los archivos locales.', 'danger');
@@ -2156,11 +2378,8 @@ function generatePDF(records, dateStr, dateFile) {
     const pageHeight = doc.internal.pageSize.getHeight();
     const providerName = records.length > 0 ? (records[0].provider || 'Proveedor no definido').toUpperCase() : 'SIN PROVEEDOR';
 
-    // Título: INVENTARIO {PROVEEDOR} {DIA} {MES_MAYUS}
-    // Use the local formatted date (`dateStr`) to avoid UTC offset issues.
     const displayDate = (() => {
         try {
-            // dateStr expected like '20/5/2026' (es-CO). Parse and get month name locally.
             const parts = String(dateStr).split('/');
             const day = parts[0].padStart(2, '0');
             const monthIdx = (parseInt(parts[1], 10) || 1) - 1;
@@ -2171,7 +2390,11 @@ function generatePDF(records, dateStr, dateFile) {
             return dateStr.toUpperCase();
         }
     })();
-    const titleText = `INVENTARIO ${providerName} ${displayDate}`;
+
+    // Si viene con blockLabel usa ese título, si no usa el proveedor
+    const titleText = blockLabel
+        ? `INVENTARIO ${blockLabel.toUpperCase()} — ${displayDate}`
+        : `INVENTARIO ${providerName} ${displayDate}`;
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(20);

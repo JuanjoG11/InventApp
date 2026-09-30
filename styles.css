@@ -1278,3 +1278,104 @@ select.input-form option {
 .dark-theme .assign-block-card.active-detail {
     border-color: var(--color-primary);
 }
+
+/* ==========================================================================
+   MONITOR — Secciones por bloque con botón Finalizar
+   ========================================================================== */
+
+.monitor-block-section {
+    border: 1.5px solid var(--border-color);
+    border-radius: 14px;
+    padding: 14px 16px;
+    background: var(--bg-surface-hover, transparent);
+    transition: border-color 0.2s;
+}
+
+.monitor-block-section.monitor-block-done {
+    border-color: var(--color-success);
+    background: rgba(16,185,129,0.04);
+}
+
+.monitor-block-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.monitor-block-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.monitor-block-worker {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.monitor-block-progress-text {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.monitor-block-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.monitor-block-bar {
+    height: 5px;
+    background: var(--border-color);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.monitor-block-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--color-primary), var(--color-accent));
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+
+.monitor-block-section.monitor-block-done .monitor-block-fill {
+    background: linear-gradient(90deg, var(--color-success), #34d399);
+}
+
+/* Badge de bloques pendientes */
+.monitor-pending-badge {
+    background: rgba(245,158,11,0.15);
+    color: #b45309;
+    border: 1px solid rgba(245,158,11,0.3);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.dark-theme .monitor-pending-badge {
+    background: rgba(245,158,11,0.1);
+    color: #fbbf24;
+    border-color: rgba(245,158,11,0.25);
+}
+
+.dark-theme .monitor-block-section {
+    background: rgba(255,255,255,0.02);
+    border-color: rgba(255,255,255,0.07);
+}
+
+.dark-theme .monitor-block-section.monitor-block-done {
+    border-color: var(--color-success);
+    background: rgba(16,185,129,0.06);
+}
+
+.dark-theme .monitor-block-bar {
+    background: rgba(255,255,255,0.07);
+}

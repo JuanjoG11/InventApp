@@ -316,9 +316,12 @@
                     <div class="section-card glass-panel">
                         <div class="card-header-actions">
                             <h2>Monitor de Conteo</h2>
-                            <button class="btn btn-success" onclick="finishDay()">
-                                <i data-lucide="file-check"></i> Finalizar Día y Generar PDF
-                            </button>
+                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <span id="monitor-blocks-pending-badge" class="monitor-pending-badge" style="display:none;"></span>
+                                <button id="btn-finish-all" class="btn btn-success" onclick="finishDay()" style="display:none;">
+                                    <i data-lucide="check-square"></i> Finalizar Día Completo
+                                </button>
+                            </div>
                         </div>
 
                         <div class="monitor-totals-bar margin-top-md" id="monitor-totals-bar">
@@ -345,24 +348,8 @@
                             </div>
                         </div>
 
-                        <div class="table-responsive margin-top-md">
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Bloque</th>
-                                        <th>Producto</th>
-                                        <th>Emb.</th>
-                                        <th>Inv. Total</th>
-                                        <th>Contado</th>
-                                        <th>Descuadre ($)</th>
-                                        <th>Averías</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="live-detail-table-body">
-                                    <tr><td colspan="7" class="text-center py-4">Esperando conteos...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
+                        <!-- Tabla agrupada por bloque — se renderiza desde updateAdminDashboard -->
+                        <div id="monitor-blocks-container" class="margin-top-md"></div>
                     </div>
                 </div>
 
