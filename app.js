@@ -922,13 +922,19 @@ function subscribeTaskAssignments() {
 
 function refreshTasksState(newRow) {
     if (!newRow || !Array.isArray(newRow.payload)) return;
+
+    // Si el admin tiene cambios locales sin publicar, ignorar el evento de realtime
+    // para no sobreescribir los bloques que está cargando
+    if (AppState.currentRole === 'admin' && AppState.unpublishedChanges) {
+        return;
+    }
+
     AppState.todayTasks = newRow.payload.map(task => ({ ...task }));
 
     // Restaurar bloques desde el campo 'blocks' del payload de realtime
     if (newRow.blocks && typeof newRow.blocks === 'object' && Object.keys(newRow.blocks).length) {
         AppState.blocks = newRow.blocks;
     } else {
-        // Fallback: agrupar por _blockNum
         const rebuilt = {};
         AppState.todayTasks.forEach(t => {
             const bn = t._blockNum || 1;
@@ -1380,6 +1386,15 @@ function renderAssignTab() {
         summary.appendChild(card);
     });
     lucide.createIcons();
+
+    // Mostrar/actualizar la barra de publicar
+    const publishBar = document.getElementById('publish-bar');
+    const publishBarInfo = document.getElementById('publish-bar-info');
+    if (publishBar) {
+        publishBar.style.display = blockNums.length ? 'flex' : 'none';
+        const totalProducts = blockNums.reduce((s, bn) => s + (AppState.blocks[bn]?.length || 0), 0);
+        if (publishBarInfo) publishBarInfo.textContent = `${blockNums.length} bloque(s) · ${totalProducts} productos${AppState.unpublishedChanges ? ' · ⚠️ Sin publicar' : ' · ✅ Publicado'}`;
+    }
 
     // Si ya hay un bloque activo en detalle, refrescarlo
     if (currentDetailBlock && AppState.blocks[currentDetailBlock]) {
@@ -1898,15 +1913,12 @@ function updateAdminDashboard() {
                         <div class="monitor-block-info">
                             <span class="block-badge">Bloque ${bn}</span>
                             <span class="monitor-block-worker">${workers.length ? workers.join(', ') : '<em style="color:var(--text-muted)">Sin auxiliar aún</em>'}</span>
-                            <span class="monitor-block-progress-text">${countedInBlock}/${totalInBlock} · ${pct}%</span>
+                            <span class="monitor-block-progress-text ${allDone ? 'text-teal' : ''}">${countedInBlock}/${totalInBlock} · ${pct}%${allDone ? ' ✓' : ''}</span>
                         </div>
                         <div class="monitor-block-actions">
-                            ${allDone
-                                ? `<button class="btn btn-success btn-sm" onclick="finishBlock(${bn})">
-                                       <i data-lucide="file-check"></i> Finalizar Bloque ${bn}
-                                   </button>`
-                                : `<span class="text-muted" style="font-size:0.8rem;">Esperando conteos...</span>`
-                            }
+                            <button class="btn btn-success btn-sm" onclick="finishBlock(${bn})">
+                                <i data-lucide="file-check"></i> Finalizar Bloque ${bn}
+                            </button>
                         </div>
                     </div>
                     <div class="monitor-block-bar">
@@ -2479,32 +2491,33 @@ function generatePDF(records, dateStr, dateFile, blockLabel) {
         ]],
         body: tableData,
         styles: {
-            fontSize: 9,
-            cellPadding: 4,
+            fontSize: 8,
+            cellPadding: 2.5,
             textColor: [30, 41, 59],
-            minCellHeight: 8
+            minCellHeight: 7
         },
         headStyles: {
             fillColor: [249, 115, 22],
             textColor: 255,
-            fontStyle: 'bold'
+            fontStyle: 'bold',
+            fontSize: 8
         },
         alternateRowStyles: {
             fillColor: [255, 247, 237]
         },
         columnStyles: {
-            0: { cellWidth: 65 },
-            1: { cellWidth: 25 },
-            2: { cellWidth: 15 },
-            3: { cellWidth: 22 },
-            4: { cellWidth: 18 },
-            5: { cellWidth: 18 },
-            6: { cellWidth: 18 },
-            7: { cellWidth: 20, halign: 'center' },
-            8: { cellWidth: 30, halign: 'right' },
-            9: { cellWidth: 18, halign: 'center' }
+            0: { cellWidth: 62 },
+            1: { cellWidth: 22 },
+            2: { cellWidth: 13 },
+            3: { cellWidth: 20 },
+            4: { cellWidth: 15 },
+            5: { cellWidth: 15 },
+            6: { cellWidth: 16 },
+            7: { cellWidth: 18, halign: 'center' },
+            8: { cellWidth: 32, halign: 'right' },
+            9: { cellWidth: 16, halign: 'center' }
         },
-        margin: { left: 14, right: 14 },
+        margin: { left: 10, right: 10 },
         didParseCell: function(data) {
             // Si es la fila de totales, resaltarla y evitar coloraciones por valor
             if (data.section === 'body' && data.row && Array.isArray(data.row.raw) && data.row.raw[0] === 'Totales') {

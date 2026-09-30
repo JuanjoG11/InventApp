@@ -199,13 +199,13 @@
 
                     <!-- Barra de carga: selector de bloque + proveedor + botón -->
                     <div class="section-card glass-panel">
-                        <div class="card-header-actions">
+                        <div class="card-header-actions" style="flex-wrap:wrap; gap:12px;">
                             <div>
                                 <h2>Cargar Excel por Bloque</h2>
                                 <p class="card-subtitle">Carga un Excel para cada bloque. Cada auxiliar solo verá los productos de su bloque.</p>
                             </div>
-                            <div class="header-buttons" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                                <!-- Selector de bloque destino -->
+                            <!-- Fila de carga: bloque + proveedor + botón cargar -->
+                            <div class="excel-load-row">
                                 <div style="display:flex;align-items:center;gap:6px;">
                                     <label class="input-label" style="margin:0;white-space:nowrap;font-size:0.82rem;">Bloque:</label>
                                     <select id="excel-block-select" class="input-form" style="padding:8px 10px; height:38px; min-width:80px; font-weight:700;">
@@ -221,7 +221,6 @@
                                         <option value="10">B10</option>
                                     </select>
                                 </div>
-                                <!-- Selector de proveedor -->
                                 <select id="excel-provider-select" class="input-form" style="padding:8px 12px; height:38px;">
                                     <option value="alpina" selected>Alpina</option>
                                     <option value="zenu">Zenú</option>
@@ -234,10 +233,15 @@
                                 <button class="btn btn-secondary" onclick="document.getElementById('excel-upload').click()">
                                     <i data-lucide="file-spreadsheet"></i> Cargar Excel
                                 </button>
-                                <button class="btn btn-primary" onclick="publishDailyTask()">
-                                    <i data-lucide="send"></i> Publicar Todo
-                                </button>
                             </div>
+                        </div>
+
+                        <!-- Botón Publicar en su propia fila, bien separado -->
+                        <div id="publish-bar" class="publish-bar" style="display:none;">
+                            <span class="publish-bar-info" id="publish-bar-info">0 bloques listos</span>
+                            <button class="btn btn-primary" onclick="publishDailyTask()">
+                                <i data-lucide="send"></i> Publicar Todo a los Auxiliares
+                            </button>
                         </div>
 
                         <!-- Resumen de bloques cargados -->

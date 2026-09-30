@@ -1454,3 +1454,42 @@ select.input-form option {
 .dark-theme .monitor-block-bar {
     background: rgba(255,255,255,0.07);
 }
+
+/* ==========================================================================
+   BARRA DE CARGA EXCEL + PUBLICAR
+   ========================================================================== */
+
+.excel-load-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.publish-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    background: rgba(79,70,229,0.08);
+    border: 1.5px solid rgba(79,70,229,0.25);
+    border-radius: 12px;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+}
+
+.publish-bar-info {
+    font-size: 0.87rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.dark-theme .publish-bar {
+    background: rgba(79,70,229,0.1);
+    border-color: rgba(79,70,229,0.3);
+}
+
+.dark-theme .publish-bar-info {
+    color: #94a3b8;
+}
