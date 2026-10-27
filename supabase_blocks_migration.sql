@@ -23,6 +23,10 @@ ALTER TABLE public.task_assignments
 ALTER TABLE public.inventory_history
   ADD COLUMN IF NOT EXISTS precio numeric DEFAULT 0;
 
+-- 5b) Agregar columna block_num a inventory_history para rastrear el bloque que generó el registro
+ALTER TABLE public.inventory_history
+  ADD COLUMN IF NOT EXISTS block_num integer DEFAULT 0;
+
 -- 6) Índice para filtrar rápido por bloque
 CREATE INDEX IF NOT EXISTS idx_worker_counts_block_num
   ON public.worker_counts (block_num);

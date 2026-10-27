@@ -31,6 +31,13 @@ const USE_SUPABASE_AUTH = false; // No se requiere auth en Supabase, usando logi
 const USE_SUPABASE_PRODUCTS = false; // Si el admin sube todo con Excel, no necesitamos tabla products.
 // Si ves 401 / 42501 en task_assignments, ejecuta el SQL en supabase_task_assignments_policy.sql
 
+/**
+ * Máximo de registros de historial a conservar en localStorage.
+ * El historial completo siempre está en Supabase (inventory_history).
+ * localStorage tiene límite ~5MB; con registros de ~500B cada uno, 2000 ≈ 1MB.
+ */
+const MAX_LOCAL_HISTORY = 2000;
+
 // Catálogo base de prueba por si no cargan Excel
 const initialCatalog = [
     { id: 'alp-01', provider: 'alpina', name: 'Leche Entera 1L', code: 'ALP-101' },
@@ -46,6 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initApp() {
+    sanitizeLocalStorage();  // Limpiar localStorage si está saturado
     initTheme();
     initNetworkStatus();
     registerServiceWorker();
@@ -54,6 +62,28 @@ async function initApp() {
     await loadData();
     await initializeUserSession();
 }
+
+/**
+ * Limpia el localStorage si el historial guardado es demasiado grande.
+ * Se ejecuta al inicio antes de cargar datos para evitar QuotaExceededError.
+ */
+function sanitizeLocalStorage() {
+    try {
+        const rawHistory = localStorage.getItem('ia_history');
+        if (rawHistory) {
+            const parsed = JSON.parse(rawHistory);
+            if (Array.isArray(parsed) && parsed.length > MAX_LOCAL_HISTORY) {
+                console.warn(`Historial local tiene ${parsed.length} registros. Recortando a ${MAX_LOCAL_HISTORY}...`);
+                localStorage.setItem('ia_history', JSON.stringify(parsed.slice(-MAX_LOCAL_HISTORY)));
+            }
+        }
+    } catch (e) {
+        // Si el historial está corrupto o es demasiado grande para parsear, eliminarlo
+        console.warn('Historial local corrupto o demasiado grande. Eliminando para recuperar espacio...', e);
+        try { localStorage.removeItem('ia_history'); } catch(_) {}
+    }
+}
+
 
 function initTheme() {
     try {
@@ -1090,14 +1120,49 @@ async function loadData() {
     }
 }
 
+/**
+ * Guarda un valor en localStorage de forma segura.
+ * Si hay QuotaExceededError, intenta liberar espacio eliminando el historial
+ * antiguo (que ya está en Supabase) antes de reintentar.
+ */
+function safeSetItem(key, value) {
+    try {
+        localStorage.setItem(key, value);
+    } catch (e) {
+        if (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22) {
+            console.warn(`localStorage lleno al guardar '${key}'. Liberando historial antiguo...`);
+            try {
+                // Liberar espacio: recortar historial a la mitad como medida de emergencia
+                const emergencyLimit = Math.floor(MAX_LOCAL_HISTORY / 4);
+                if (AppState.history.length > emergencyLimit) {
+                    AppState.history = AppState.history.slice(-emergencyLimit);
+                }
+                localStorage.setItem('ia_history', JSON.stringify(AppState.history));
+                // Reintentar el item original
+                localStorage.setItem(key, value);
+            } catch (e2) {
+                console.warn(`No se pudo guardar '${key}' en localStorage incluso después de limpiar:`, e2);
+            }
+        } else {
+            console.warn(`Error al guardar '${key}' en localStorage:`, e);
+        }
+    }
+}
+
+
 function saveData() {
-    localStorage.setItem('ia_catalog', JSON.stringify(AppState.catalog));
-    localStorage.setItem('ia_todayTasks', JSON.stringify(AppState.todayTasks));
-    localStorage.setItem('ia_counts', JSON.stringify(AppState.counts));
-    localStorage.setItem('ia_history', JSON.stringify(AppState.history));
-    localStorage.setItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
-    localStorage.setItem('ia_blocks', JSON.stringify(AppState.blocks));
-    localStorage.setItem('ia_numBlocks', String(AppState.numBlocks));
+    // Limitar el historial local al máximo permitido (el resto queda en Supabase)
+    const historyToSave = AppState.history.length > MAX_LOCAL_HISTORY
+        ? AppState.history.slice(-MAX_LOCAL_HISTORY)
+        : AppState.history;
+
+    safeSetItem('ia_catalog', JSON.stringify(AppState.catalog));
+    safeSetItem('ia_todayTasks', JSON.stringify(AppState.todayTasks));
+    safeSetItem('ia_counts', JSON.stringify(AppState.counts));
+    safeSetItem('ia_history', JSON.stringify(historyToSave));
+    safeSetItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
+    safeSetItem('ia_blocks', JSON.stringify(AppState.blocks));
+    safeSetItem('ia_numBlocks', String(AppState.numBlocks));
 
     // Segunda copia en sessionStorage como respaldo inmediato contra limpieza de localStorage
     try {
@@ -1133,7 +1198,7 @@ async function fetchHistoryFromSupabase() {
         return;
     }
     if (data && data.length > 0) {
-        AppState.history = data.map(r => ({
+        const remoteRecords = data.map(r => ({
             date: r.date,
             name: r.product_name,
             code: r.product_code || '',
@@ -1147,15 +1212,52 @@ async function fetchHistoryFromSupabase() {
             diffUds: r.diff_uds || 0,
             diffValorRaw: r.diff_valor_raw || 0,
             descuadreFormateado: r.descuadre_formateado || '-',
-            averias: r.averias || 0
+            averias: r.averias || 0,
+            blockNum: r.block_num || 0,
+            _supabaseId: r.id || null
         }));
+
+        // Merge: conservar registros locales que NO estén ya en Supabase
+        // Normalizar fechas locales a ISO antes de comparar (pueden ser "d/m/yyyy" legacy)
+        function toISO(dateStr) {
+            if (!dateStr) return '';
+            if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
+            const p = dateStr.split('/');
+            if (p.length === 3) return `${p[2].slice(0,4)}-${String(p[1]).padStart(2,'0')}-${String(p[0]).padStart(2,'0')}`;
+            return dateStr;
+        }
+
+        const remoteKeys = new Set(remoteRecords.map(r => `${toISO(r.date)}|${r.code}|${r.name}`));
+        const localOnly = AppState.history
+            .filter(r => !remoteKeys.has(`${toISO(r.date)}|${r.code}|${r.name}`))
+            .map(r => ({ ...r, date: toISO(r.date) || r.date })); // normalizar fecha local a ISO
+
+        // Combinar: remoteRecords (fuente de verdad) + registros locales únicos
+        AppState.history = [...remoteRecords, ...localOnly];
+
+        // Reintentar push de registros locales que nunca llegaron a Supabase
+        if (localOnly.length > 0) {
+            const toRetry = localOnly.filter(r => !r._supabaseId);
+            if (toRetry.length > 0) {
+                console.log(`Reintentando push de ${toRetry.length} registros locales a Supabase...`);
+                pushHistoryToSupabase(toRetry).catch(e => console.warn('Retry push error:', e));
+            }
+        }
         saveData();
         renderAdminHistory();
     }
 }
 
 async function pushHistoryToSupabase(records) {
-    const payload = records.map(record => ({
+    if (!supabaseClient || !navigator.onLine) {
+        AppState.pendingSync.history.push(...records.map(record => ({ ...record })));
+        saveData();
+        showToast('Historial guardado localmente. Se sincronizará cuando vuelvas online.', 'success');
+        return;
+    }
+
+    // Intentar primero con block_num (requiere migración ejecutada)
+    const payloadFull = records.map(record => ({
         date: record.date,
         product_name: record.name,
         product_code: record.code,
@@ -1168,17 +1270,19 @@ async function pushHistoryToSupabase(records) {
         diff_uds: record.diffUds,
         diff_valor_raw: record.diffValorRaw,
         descuadre_formateado: record.descuadreFormateado,
-        averias: record.averias
+        averias: record.averias,
+        block_num: record.blockNum || 0
     }));
 
-    if (!supabaseClient || !navigator.onLine) {
-        AppState.pendingSync.history.push(...records.map(record => ({ ...record })));
-        saveData();
-        showToast('Historial guardado localmente. Se sincronizará cuando vuelvas online.', 'success');
-        return;
+    let { error } = await supabaseClient.from('inventory_history').insert(payloadFull);
+
+    // Si falló por columna inexistente (block_num no migrado aún), reintentar sin ella
+    if (error && (error.code === '42703' || (error.message || '').includes('block_num'))) {
+        console.warn('Columna block_num no existe aún. Ejecuta supabase_blocks_migration.sql. Reintentando sin block_num...');
+        const payloadBase = payloadFull.map(({ block_num, ...rest }) => rest);
+        ({ error } = await supabaseClient.from('inventory_history').insert(payloadBase));
     }
 
-    const { error } = await supabaseClient.from('inventory_history').insert(payload);
     if (error) {
         console.warn('Supabase history insert error', error);
         AppState.pendingSync.history.push(...records.map(record => ({ ...record })));
@@ -1630,6 +1734,17 @@ function switchAdminTab(tabId) {
     if (tabId === 'assign') renderAssignTab();
     if (tabId === 'blocks') renderBlocksTab();
     if (tabId === 'monitor') updateAdminDashboard();
+    if (tabId === 'history') {
+        // Limpiar filtros de fecha para mostrar todo el historial al abrir
+        const fromEl = document.getElementById('filter-date-from');
+        const toEl   = document.getElementById('filter-date-to');
+        if (fromEl) fromEl.value = '';
+        if (toEl)   toEl.value   = '';
+        renderAdminHistory();
+        if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+            fetchHistoryFromSupabase();
+        }
+    }
 }
 
 // --- Lógica ADMIN ---
@@ -1709,11 +1824,17 @@ function handleExcelUpload(event) {
             if (!AppState.blocks[targetBlock]) {
                 AppState.blocks[targetBlock] = [];
             }
-            // Merge: si el producto ya existe en este bloque, actualizarlo; si no, añadirlo
+            // Merge: si el producto ya existe en este bloque, actualizarlo conservando
+            // su id original para que los conteos en curso no queden huérfanos.
             stampedItems.forEach(item => {
                 const idx = AppState.blocks[targetBlock].findIndex(t => t.code === item.code);
                 if (idx >= 0) {
-                    AppState.blocks[targetBlock][idx] = item;
+                    // Preservar el id del ítem existente → los worker_counts que
+                    // referencian ese task_id siguen siendo válidos tras la recarga.
+                    AppState.blocks[targetBlock][idx] = {
+                        ...item,
+                        id: AppState.blocks[targetBlock][idx].id
+                    };
                 } else {
                     AppState.blocks[targetBlock].push(item);
                 }
@@ -1811,26 +1932,47 @@ async function publishDailyTask() {
     // Resumen de lo que se va a publicar
     const blockSummary = blockNums.map(bn => `  • Bloque ${bn}: ${(AppState.blocks[bn] || []).length} productos`).join('\n');
 
-    // Verificar si ya hay conteos activos en Supabase antes de sobrescribir
+    // Conjunto de task_id que SIGUEN publicados (todos los bloques activos).
+    // Los conteos de estos productos deben conservarse al republicar.
+    const publishedTaskIds = new Set();
+    blockNums.forEach(bn => {
+        (AppState.blocks[bn] || []).forEach(item => publishedTaskIds.add(item.id));
+    });
+
+    // Verificar conteos activos en Supabase antes de publicar.
+    // Solo se borrarán los conteos HUÉRFANOS (de productos que ya no están
+    // en ningún bloque publicado); los de los bloques activos se conservan.
+    let orphanedCountIds = [];   // ids (PK) de conteos huérfanos que se borrarán
+    let preservedCount = 0;       // conteos que se conservarán
     if (USE_SUPABASE && supabaseClient && navigator.onLine) {
         try {
-            const { count, error: countErr } = await supabaseClient
+            const { data: existingCounts, error: countErr } = await supabaseClient
                 .from('worker_counts')
-                .select('*', { count: 'exact', head: true });
-            if (!countErr && count > 0) {
-                const proceed = confirm(
-                    `⚠️ Hay ${count} conteo(s) activos en curso.\n\n` +
-                    'Publicar nuevos bloques borrará esos conteos sin guardarlos en el historial.\n\n' +
-                    '¿Deseas continuar de todas formas?'
-                );
-                if (!proceed) return;
+                .select('id, task_id');
+
+            if (!countErr && existingCounts && existingCounts.length > 0) {
+                orphanedCountIds = existingCounts
+                    .filter(c => !publishedTaskIds.has(c.task_id))
+                    .map(c => c.id);
+                preservedCount = existingCounts.length - orphanedCountIds.length;
+
+                // Solo advertir si hay conteos que realmente se van a borrar
+                if (orphanedCountIds.length > 0) {
+                    const proceed = confirm(
+                        `⚠️ Hay ${orphanedCountIds.length} conteo(s) de productos que ya no están en los bloques publicados.\n\n` +
+                        `Se conservarán ${preservedCount} conteo(s) de los bloques activos.\n\n` +
+                        '¿Deseas continuar?'
+                    );
+                    if (!proceed) return;
+                }
             }
         } catch (e) {
             console.warn('Error verificando conteos activos antes de publicar:', e);
         }
     }
 
-    AppState.counts = [];
+    // Conservar los conteos de los bloques que siguen activos (no borrar todo)
+    AppState.counts = AppState.counts.filter(c => publishedTaskIds.has(c.item.id));
     saveData();
 
     if (USE_SUPABASE && supabaseClient) {
@@ -1839,9 +1981,18 @@ async function publishDailyTask() {
         AppState.unpublishedChanges = false;  // ya publicado
         saveData();
         try {
-            await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+            // Borrar solo los conteos huérfanos (task_id que ya no está en ningún
+            // bloque publicado), en lotes para no exceder límites de URL.
+            const CHUNK = 100;
+            for (let i = 0; i < orphanedCountIds.length; i += CHUNK) {
+                const chunk = orphanedCountIds.slice(i, i + CHUNK);
+                await supabaseClient
+                    .from('worker_counts')
+                    .delete()
+                    .in('id', chunk);
+            }
         } catch (e) {
-            console.warn('Error al borrar conteos activos en Supabase al publicar:', e);
+            console.warn('Error al borrar conteos huérfanos en Supabase al publicar:', e);
         }
     } else {
         AppState.unpublishedChanges = false;
@@ -2023,52 +2174,60 @@ function applyHistoryFilters() {
     tbody.innerHTML = '';
 
     const dateFrom = document.getElementById('filter-date-from')?.value || '';
-    const dateTo = document.getElementById('filter-date-to')?.value || '';
+    const dateTo   = document.getElementById('filter-date-to')?.value   || '';
     const productSearch = (document.getElementById('filter-product')?.value || '').toLowerCase();
     const providerFilter = document.getElementById('filter-provider')?.value || 'all';
 
-    function parseHistoryDate(dateStr) {
+    /**
+     * Normaliza cualquier formato de fecha a yyyy-mm-dd para comparar.
+     * Acepta: yyyy-mm-dd (ISO/Supabase), d/m/yyyy o dd/mm/yyyy (es-CO legacy).
+     */
+    function toISO(dateStr) {
         if (!dateStr) return null;
-        // Formato Supabase: yyyy-mm-dd → ya está listo
-        if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
-            return dateStr.slice(0, 10);
-        }
-        // Formato local es-CO: d/m/yyyy o dd/mm/yyyy
+        if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
         const parts = dateStr.split('/');
         if (parts.length === 3) {
             const d = String(parts[0]).padStart(2, '0');
             const m = String(parts[1]).padStart(2, '0');
-            const y = parts[2];
+            const y = String(parts[2]).slice(0, 4);
             return `${y}-${m}-${d}`;
         }
         return null;
     }
 
+    /** Muestra la fecha como dd/mm/yyyy independientemente de cómo esté guardada. */
+    function fmtDisplay(dateStr) {
+        const iso = toISO(dateStr);
+        if (!iso) return dateStr || '-';
+        const [y, m, d] = iso.split('-');
+        return `${d}/${m}/${y}`;
+    }
+
     let filtered = AppState.history.filter(rec => {
         const recProvider = (rec.provider || '').toLowerCase();
-        const recName = (rec.name || '').toLowerCase();
-        const recCode = (rec.code || '').toLowerCase();
+        const recName     = (rec.name     || '').toLowerCase();
+        const recCode     = (rec.code     || '').toLowerCase();
 
         if (providerFilter !== 'all' && recProvider !== providerFilter) return false;
         if (productSearch && !recName.includes(productSearch) && !recCode.includes(productSearch)) return false;
 
         if (dateFrom || dateTo) {
-            const recDate = parseHistoryDate(rec.date);
-            if (recDate) {
-                if (dateFrom && recDate < dateFrom) return false;
-                if (dateTo && recDate > dateTo) return false;
+            const recISO = toISO(rec.date);
+            if (recISO) {
+                if (dateFrom && recISO < dateFrom) return false;
+                if (dateTo   && recISO > dateTo)   return false;
             }
         }
         return true;
     });
 
-    let totalDiffUds = 0;
+    let totalDiffUds   = 0;
     let totalDiffValor = 0;
-    let totalAverias = 0;
+    let totalAverias   = 0;
     filtered.forEach(rec => {
-        totalDiffUds += rec.diffUds || 0;
+        totalDiffUds   += rec.diffUds      || 0;
         totalDiffValor += rec.diffValorRaw || 0;
-        totalAverias += parseInt(rec.averias) || 0;
+        totalAverias   += parseInt(rec.averias) || 0;
     });
 
     const fmtTotalValor = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(totalDiffValor);
@@ -2094,14 +2253,19 @@ function applyHistoryFilters() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center py-4">No hay registros que coincidan con los filtros.</td></tr>';
+        const totalRecords = AppState.history.length;
+        const msg = totalRecords === 0
+            ? 'No hay registros en el historial todavía.'
+            : `No hay registros que coincidan con los filtros. (Hay ${totalRecords} registro(s) en total — prueba quitar los filtros de fecha)`;
+        tbody.innerHTML = `<tr><td colspan="10" class="text-center py-4">${msg}</td></tr>`;
         return;
     }
 
     filtered.slice().reverse().forEach(record => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td>${record.date}</td>
+            <td>${fmtDisplay(record.date)}</td>
+            <td>${record.blockNum ? `<span class="provider-badge" style="background:rgba(99,102,241,0.18);color:#a5b4fc;border-color:rgba(99,102,241,0.35)">B${record.blockNum}</span>` : '<span style="color:rgba(255,255,255,0.3)">—</span>'}</td>
             <td><strong>${record.name}</strong></td>
             <td><span class="provider-badge ${record.provider || ''}">${record.provider || '-'}</span></td>
             <td>${record.embalaje || 1}</td>
@@ -2188,7 +2352,7 @@ window.finishBlock = async function(blockNum) {
             ? new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor)
             : '-';
         const record = {
-            date: dateStr,
+            date: dateFile,
             name: item.name,
             code: item.code,
             provider: item.provider,
@@ -2361,7 +2525,7 @@ window.finishDay = async function() {
         const fmtVal = diffValor !== 0 ? new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(diffValor) : '-';
 
         const record = {
-            date: dateStr,
+            date: dateFile,
             name: item.name,
             code: item.code,
             provider: item.provider,
