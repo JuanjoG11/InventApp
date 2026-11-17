@@ -224,6 +224,10 @@
                                         <option value="10">B10</option>
                                     </select>
                                 </div>
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <label class="input-label" style="margin:0;white-space:nowrap;font-size:0.82rem;">Día:</label>
+                                    <input type="date" id="inventory-date" class="input-form" style="padding:6px 10px; height:38px; min-width:150px; font-weight:700;" onchange="setInventoryDate(this.value)" title="Día del inventario que van a contar (aparece en el PDF/Excel)">
+                                </div>
                                 <select id="excel-provider-select" class="input-form" style="padding:8px 12px; height:38px;">
                                     <option value="alpina" selected>Alpina</option>
                                     <option value="zenu">Zenú</option>
@@ -452,6 +456,7 @@
                         <div>
                             <span class="block-banner-title" id="worker-block-title">Bloque 1</span>
                             <span class="block-banner-sub" id="worker-block-range">Productos: —</span>
+                            <span class="block-banner-sub" id="worker-block-date">Día: —</span>
                         </div>
                     </div>
                     <div class="block-banner-progress">

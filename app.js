@@ -9,6 +9,7 @@ const AppState = {
     currentUserName: null,
     currentUserEmail: null,
     currentBlock: null,      // número de bloque del auxiliar (1-N), null = admin/no asignado
+    inventoryDate: null,     // ISO YYYY-MM-DD del día del inventario que se está trabajando (default = hoy)
     catalog: [],
     todayTasks: [],          // todos los productos del día
     blocks: {},              // { 1: [items...], 2: [items...], ... }  distribución por bloque
@@ -887,6 +888,12 @@ async function fetchLatestTasks() {
                 AppState.blocks = rebuilt;
             }
             AppState.numBlocks = latest.numBlocks || Object.keys(AppState.blocks).length || 0;
+
+            // Sincronizar el día del inventario publicado (para que se vea en otros dispositivos)
+            const publishedDate = latest.payload[0]?.inventoryDate;
+            if (publishedDate) {
+                AppState.inventoryDate = publishedDate;
+            }
         } else {
             // Payload vacío → admin limpió el día (solo si no tiene cambios locales)
             if (!AppState.unpublishedChanges) {
@@ -975,6 +982,12 @@ function refreshTasksState(newRow) {
     }
     AppState.numBlocks = newRow.numBlocks || Object.keys(AppState.blocks).length || 0;
 
+    // Sincronizar el día del inventario publicado en tiempo real
+    const publishedDate = newRow.payload[0]?.inventoryDate;
+    if (publishedDate) {
+        AppState.inventoryDate = publishedDate;
+    }
+
     saveData();
     if (AppState.currentRole === 'worker') renderWorkerTasks();
     if (AppState.currentRole === 'admin') {
@@ -1012,12 +1025,16 @@ async function syncCountsToSupabase() {
     return !hasError;
 }
 
-async function pushTasksToSupabase() {
-    const taskPayload = AppState.todayTasks.map(task => ({ ...task }));
+async function pushTasksToSupabase(forceEmpty = false) {
+    // forceEmpty=true: publica una lista vacía (se usa al finalizar el día para
+    // limpiar la vista de los trabajadores SIN borrar los bloques locales del admin).
+    const taskPayload = forceEmpty
+        ? []
+        : AppState.todayTasks.map(task => ({ ...task, inventoryDate: AppState.inventoryDate }));
     const taskRecord = {
         payload: taskPayload,
-        blocks: AppState.blocks,          // estructura completa { 1: [...], 2: [...] }
-        numBlocks: AppState.numBlocks,
+        blocks: forceEmpty ? {} : AppState.blocks,          // estructura completa { 1: [...], 2: [...] }
+        numBlocks: forceEmpty ? 0 : AppState.numBlocks,
         published_by: AppState.currentUserId,
         published_by_email: AppState.currentUserEmail,
         status: 'active'
@@ -1105,6 +1122,18 @@ async function loadData() {
     AppState.blocks = savedBlocks ? JSON.parse(savedBlocks) : {};
     AppState.numBlocks = savedNumBlocks ? parseInt(savedNumBlocks) : 5;
 
+    // Día del inventario: si no hay valor guardado, por defecto hoy
+    AppState.inventoryDate = localStorage.getItem('ia_inventoryDate') || new Date().toISOString().slice(0, 10);
+
+    // Flag de cambios sin publicar: se persiste para que los bloques cargados
+    // sobrevivan a un recargado tras finalizar el día. En el primer arranque
+    // tras actualizar (clave inexistente), si ya hay bloques los tratamos como
+    // "sin publicar" para no perderlos.
+    const savedUnpublished = localStorage.getItem('ia_unpublishedChanges');
+    AppState.unpublishedChanges = savedUnpublished === null
+        ? Object.keys(AppState.blocks).length > 0
+        : savedUnpublished === 'true';
+
     const parsedSync = savedSyncFinal ? JSON.parse(savedSyncFinal) : {};
     AppState.pendingSync = {
         tasks: parsedSync.tasks || [],
@@ -1163,6 +1192,8 @@ function saveData() {
     safeSetItem('ia_pendingSync', JSON.stringify(AppState.pendingSync));
     safeSetItem('ia_blocks', JSON.stringify(AppState.blocks));
     safeSetItem('ia_numBlocks', String(AppState.numBlocks));
+    safeSetItem('ia_inventoryDate', AppState.inventoryDate || new Date().toISOString().slice(0, 10));
+    safeSetItem('ia_unpublishedChanges', AppState.unpublishedChanges ? 'true' : 'false');
 
     // Segunda copia en sessionStorage como respaldo inmediato contra limpieza de localStorage
     try {
@@ -1442,6 +1473,8 @@ let currentDetailBlock = null;
  * Renderiza el tab Asignar: resumen de bloques + detalle del bloque activo.
  */
 function renderAssignTab() {
+    syncInventoryDateInput();
+
     const summary = document.getElementById('assign-blocks-summary');
     if (!summary) return;
 
@@ -2335,8 +2368,7 @@ window.finishBlock = async function(blockNum) {
         }
     }
 
-    const dateStr = new Date().toLocaleDateString('es-CO');
-    const dateFile = new Date().toISOString().slice(0, 10);
+    const { dateStr, dateFile } = getInventoryDateParts();
 
     // Construir records solo del bloque
     const blockRecords = blockItems.map(item => {
@@ -2368,14 +2400,25 @@ window.finishBlock = async function(blockNum) {
         return record;
     });
 
+    // Recoger el/los nombre(s) de quien contó este bloque para nombrar el PDF
+    const blockWorkerNames = [...new Set(
+        AppState.counts
+            .filter(c => blockItems.some(t => t.id === (c.item && c.item.id)))
+            .map(c => (c.workerName || c.workerEmail || '').toString().trim())
+            .filter(Boolean)
+    )];
+    const workerFilePart = blockWorkerNames.length
+        ? '_' + blockWorkerNames.map(n => n.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_')).join('_')
+        : '';
+
     // PDF y Excel del bloque
     try {
-        generatePDF(blockRecords, dateStr, `${dateFile}_B${blockNum}`, `Bloque ${blockNum}`);
+        generatePDF(blockRecords, dateStr, `${dateFile}_B${blockNum}`, `Bloque ${blockNum}`, workerFilePart);
     } catch (e) {
         console.warn('Error generando PDF del bloque:', e);
         showToast('Error al generar PDF. Revisa la consola.', 'danger');
     }
-    await generateExcel(blockRecords, `${dateFile}_B${blockNum}`);
+    await generateExcel(blockRecords, `${dateFile}_B${blockNum}`, workerFilePart);
 
     if (USE_SUPABASE) {
         await pushHistoryToSupabase(blockRecords);
@@ -2509,8 +2552,7 @@ window.finishDay = async function() {
         }
     }
 
-    const dateStr = new Date().toLocaleDateString('es-CO');
-    const dateFile = new Date().toISOString().slice(0, 10);
+    const { dateStr, dateFile } = getInventoryDateParts();
 
     // Build records for history and PDF, including 0 conteos cuando no se contó
     const dayRecords = AppState.todayTasks.map(item => {
@@ -2556,17 +2598,18 @@ window.finishDay = async function() {
         await pushHistoryToSupabase(dayRecords);
     }
 
+    // Reiniciar SOLO los conteos. Los bloques cargados (Excel) se CONSERVAN
+    // para que el admin no tenga que recargarlos el siguiente día; quedan
+    // pendientes de publicar de nuevo.
     AppState.counts = [];
-    AppState.todayTasks = [];
-    AppState.blocks = {};
-    AppState.unpublishedChanges = false;
+    AppState.unpublishedChanges = true;
     saveData();
 
     if (USE_SUPABASE && supabaseClient) {
         try {
-            // Sincronizar la lista de tareas vacía para limpiar en los trabajadores
-            await pushTasksToSupabase();
-            
+            // Publicar lista vacía para limpiar la vista de los trabajadores
+            await pushTasksToSupabase(true);
+
             // Borrar todos los conteos activos en Supabase
             await supabaseClient.from('worker_counts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
         } catch (e) {
@@ -2578,14 +2621,42 @@ window.finishDay = async function() {
     updateAdminDashboard();
     renderAssignTab();
     renderBlocksTab();
-    showToast('Día finalizado. PDF generado, descargado y base de datos limpia.', 'success');
+    showToast('Día finalizado. PDF generado. Los bloques cargados se conservan: pulsa "Publicar" para enviarlos de nuevo a los auxiliares.', 'success');
 }
 
 function getJsPDFCtor() {
     return window.jsPDF || window.jspdf?.jsPDF || window.jspdf || null;
 }
 
-function generatePDF(records, dateStr, dateFile, blockLabel) {
+/**
+ * Devuelve { dateStr, dateFile } según el día del inventario asignado
+ * (AppState.inventoryDate). Si no hay fecha, usa hoy.
+ * - dateStr  → formato dd/mm/yyyy (es-CO) para mostrar y para el título del PDF.
+ * - dateFile → ISO YYYY-MM-DD para el nombre del archivo.
+ * Se construye a partir de las partes ISO para evitar desfases por zona horaria.
+ */
+function getInventoryDateParts() {
+    const iso = AppState.inventoryDate || new Date().toISOString().slice(0, 10);
+    const [y, m, d] = iso.split('-').map(Number);
+    const dateStr = `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
+    return { dateStr, dateFile: iso };
+}
+
+// El admin puede fijar el día del inventario (no borra bloques ni conteos).
+window.setInventoryDate = function(value) {
+    if (!value) return;          // no permitir vaciar la fecha desde el input
+    AppState.inventoryDate = value;
+    saveData();
+    showToast(`Día del inventario fijado en ${value}`, 'info');
+};
+
+// Sincroniza el input de fecha con el valor guardado (al abrir la pestaña admin).
+function syncInventoryDateInput() {
+    const el = document.getElementById('inventory-date');
+    if (el && AppState.inventoryDate) el.value = AppState.inventoryDate;
+}
+
+function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart) {
     const jsPDFCtor = getJsPDFCtor();
     if (!jsPDFCtor) {
         showToast('No se pudo cargar la librería jsPDF. Abre la app desde un servidor HTTP o revisa los archivos locales.', 'danger');
@@ -2724,11 +2795,11 @@ function generatePDF(records, dateStr, dateFile, blockLabel) {
         doc.text(`Página ${i} de ${pageCount}`, pageWidth - 14, pageHeight - 8, { align: 'right' });
     }
 
-    doc.save(`Inventario_DECHSS_${dateFile}.pdf`);
+    doc.save(`Inventario_DECHSS_${dateFile}${workerFilePart || ''}.pdf`);
 }
 
 // --- Export Excel Generation ---
-function generateExcel(records, dateFile) {
+function generateExcel(records, dateFile, workerFilePart) {
     if (typeof XLSX === 'undefined') {
         showToast('Librería XLSX no disponible. No se pudo generar el Excel.', 'danger');
         return;
@@ -2780,7 +2851,7 @@ function generateExcel(records, dateFile) {
     ];
     ws['!cols'] = wscols;
 
-    XLSX.writeFile(wb, `Inventario_DECHSS_${dateFile}.xlsx`);
+    XLSX.writeFile(wb, `Inventario_DECHSS_${dateFile}${workerFilePart || ''}.xlsx`);
 }
 
 
@@ -2825,6 +2896,8 @@ function renderWorkerTasks() {
             if (badge) badge.textContent = `B${AppState.currentBlock}`;
             if (title) title.textContent = `Bloque ${AppState.currentBlock}`;
             if (range) range.textContent = `${myTasks.length} productos asignados`;
+            const dateEl = document.getElementById('worker-block-date');
+            if (dateEl) dateEl.textContent = `Día: ${getInventoryDateParts().dateStr}`;
 
             const counted = myTasks.filter(t => AppState.counts.find(c => c.item.id === t.id)).length;
             const pct = myTasks.length > 0 ? Math.round((counted / myTasks.length) * 100) : 0;
