@@ -951,9 +951,11 @@ function subscribeTaskAssignments() {
         });
     
     // Suscribirse a cambios en worker_counts para admin y worker
+    // (DELETE incluido para que el reconteo del admin se refle en el auxiliar)
     supabaseClient.channel('public:worker_counts')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'worker_counts' }, refreshCounts)
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'worker_counts' }, refreshCounts)
         .subscribe();
 }
 
@@ -2118,6 +2120,7 @@ function updateAdminDashboard() {
                                     <th>Contado</th>
                                     <th>Descuadre ($)</th>
                                     <th>Averías</th>
+                                    <th>Acción</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -2129,7 +2132,7 @@ function updateAdminDashboard() {
                 // Llenar la tabla de este bloque
                 const tbody = section.querySelector('tbody');
                 if (blockCounts.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted" style="padding:0.75rem;">Sin conteos aún</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="7" class="text-center text-muted" style="padding:0.75rem;">Sin conteos aún</td></tr>`;
                 } else {
                     blockCounts.forEach(countInfo => {
                         const emb = countInfo.item.embalaje || 1;
@@ -2156,7 +2159,17 @@ function updateAdminDashboard() {
                             <td><strong>${totalContado}</strong>${diffHtml}</td>
                             <td>${valorHtml}</td>
                             <td class="${countInfo.averias > 0 ? 'text-red' : ''}"><strong>${countInfo.averias}</strong></td>
+                            <td></td>
                         `;
+                        // Botón Recontar (listener para evitar problemas de escapado con el id)
+                        const actionTd = tr.querySelector('td:last-child');
+                        const btn = document.createElement('button');
+                        btn.className = 'btn btn-danger btn-sm';
+                        btn.innerHTML = '<i data-lucide="rotate-ccw"></i> Recontar';
+                        const _itemId = countInfo.item.id;
+                        const _itemName = countInfo.item.name || _itemId;
+                        btn.addEventListener('click', () => recountProduct(bn, _itemId, _itemName));
+                        actionTd.appendChild(btn);
                         tbody.appendChild(tr);
                     });
                 }
@@ -2322,6 +2335,29 @@ function clearAllHistory() {
 }
 
 // ── Finalizar un bloque individual ──
+// Reconteo: el admin devuelve un producto contado a su bloque para que el
+// auxiliar lo vuelva a contar. Borra el conteo actual (local y en Supabase).
+window.recountProduct = async function(blockNum, itemId, itemName) {
+    if (!confirm(`¿Devolver "${itemName}" del Bloque ${blockNum} para reconteo?\n\nSe borra el conteo actual y el auxiliar deberá contarlo de nuevo.`)) return;
+
+    // Quitar el conteo del estado local del admin
+    AppState.counts = AppState.counts.filter(c => !(c.item && c.item.id === itemId));
+    saveData();
+
+    // Borrar el conteo en Supabase para que el auxiliar lo vea como pendiente
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        try {
+            await supabaseClient.from('worker_counts').delete().eq('task_id', itemId);
+        } catch (e) {
+            console.warn('Error al borrar conteo para reconteo en Supabase:', e);
+        }
+    }
+
+    updateAdminDashboard();
+    renderBlocksTab();
+    showToast(`"${itemName}" devuelto al Bloque ${blockNum} para reconteo.`, 'success');
+};
+
 window.finishBlock = async function(blockNum) {
     const blockItems = AppState.blocks[blockNum] || [];
     if (!blockItems.length) {
@@ -2357,7 +2393,8 @@ window.finishBlock = async function(blockNum) {
                         averias: record.averias,
                         workerName: record.worker_name,
                         workerEmail: record.worker_email,
-                        blockNum: record.block_num
+                        blockNum: record.block_num,
+                        task_id: record.task_id   // guardado explícito para búsqueda fiable
                     };
                     if (idx >= 0) AppState.counts[idx] = entry;
                     else AppState.counts.push(entry);
@@ -2400,25 +2437,50 @@ window.finishBlock = async function(blockNum) {
         return record;
     });
 
-    // Recoger el/los nombre(s) de quien contó este bloque para nombrar el PDF
+    // Recoger el/los nombre(s) de quien contó este bloque.
+    // Usamos task_id del fetch fresco (campo directo y confiable de worker_counts)
+    // en lugar de intentar acceder a c.item.id que puede variar según la fuente.
+    const blockItemIds = new Set(blockItems.map(t => t.id));
+
+    // freshWorkerNames: se construye directamente desde el fetch de Supabase
+    // que ya se hizo arriba. Lo recuperamos filtrando AppState.counts por task_id
+    // que coincida con los items del bloque.
+    // AppState.counts fue actualizado con workerName y workerEmail en el fetch.
     const blockWorkerNames = [...new Set(
         AppState.counts
-            .filter(c => blockItems.some(t => t.id === (c.item && c.item.id)))
-            .map(c => (c.workerName || c.workerEmail || '').toString().trim())
+            .filter(c => {
+                // Intentar todas las formas posibles de acceder al id del task
+                const idFromItem  = c.item?.id;
+                const idFromPlain = typeof c.item === 'string' ? c.item : null;
+                const idFromTask  = c.task_id || c.taskId;
+                const resolvedId  = idFromItem || idFromPlain || idFromTask;
+                return resolvedId && blockItemIds.has(resolvedId);
+            })
+            .map(c => {
+                // Prioridad: workerName real > email limpio > email crudo
+                if (c.workerName && c.workerName.trim()) return c.workerName.trim();
+                if (c.workerEmail && c.workerEmail.trim()) {
+                    // Email autogenerado: "juanperez.b1@inventapp.local" → "juanperez"
+                    const local = c.workerEmail.split('@')[0].replace(/\.b\d+$/, '').replace(/[._-]/g, ' ').trim();
+                    return local || c.workerEmail;
+                }
+                return '';
+            })
             .filter(Boolean)
     )];
     const workerFilePart = blockWorkerNames.length
         ? '_' + blockWorkerNames.map(n => n.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_')).join('_')
         : '';
+    const workerLabel = blockWorkerNames.join(', ');
 
     // PDF y Excel del bloque
     try {
-        generatePDF(blockRecords, dateStr, `${dateFile}_B${blockNum}`, `Bloque ${blockNum}`, workerFilePart);
+        generatePDF(blockRecords, dateStr, `${dateFile}_B${blockNum}`, `Bloque ${blockNum}`, workerFilePart, workerLabel);
     } catch (e) {
         console.warn('Error generando PDF del bloque:', e);
         showToast('Error al generar PDF. Revisa la consola.', 'danger');
     }
-    await generateExcel(blockRecords, `${dateFile}_B${blockNum}`, workerFilePart);
+    await generateExcel(blockRecords, `${dateFile}_B${blockNum}`, workerFilePart, workerLabel);
 
     if (USE_SUPABASE) {
         await pushHistoryToSupabase(blockRecords);
@@ -2656,7 +2718,7 @@ function syncInventoryDateInput() {
     if (el && AppState.inventoryDate) el.value = AppState.inventoryDate;
 }
 
-function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart) {
+function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart, workerLabel) {
     const jsPDFCtor = getJsPDFCtor();
     if (!jsPDFCtor) {
         showToast('No se pudo cargar la librería jsPDF. Abre la app desde un servidor HTTP o revisa los archivos locales.', 'danger');
@@ -2696,6 +2758,14 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart) {
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(107, 114, 128);
     doc.text(`Fecha: ${dateStr}`, pageWidth - 18, 24, { align: 'right' });
+
+    // Quién contó (solo en el PDF por bloque, si hay auxiliar identificado)
+    if (workerLabel) {
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.text(`Contado por: ${workerLabel}`, 14, 30);
+    }
 
     const tableData = records.map(r => {
         const diffLabel = r.diffUds > 0 ? `+${r.diffUds}` : `${r.diffUds}`;
@@ -2785,6 +2855,14 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart) {
     doc.setTextColor(15, 23, 42);
     doc.text('Firma:', signatureX, signatureY + 8);
 
+    // Nombre de quien contó, bajo la línea de firma
+    if (workerLabel) {
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(107, 114, 128);
+        doc.text(workerLabel, signatureX, signatureY + 18);
+    }
+
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
@@ -2799,11 +2877,19 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart) {
 }
 
 // --- Export Excel Generation ---
-function generateExcel(records, dateFile, workerFilePart) {
+function generateExcel(records, dateFile, workerFilePart, workerLabel) {
     if (typeof XLSX === 'undefined') {
         showToast('Librería XLSX no disponible. No se pudo generar el Excel.', 'danger');
         return;
     }
+
+    // Cabecera con nombre del auxiliar (si está disponible)
+    const infoRows = [];
+    if (workerLabel) {
+        infoRows.push(['Contado por:', workerLabel]);
+        infoRows.push([]);   // fila vacía de separación
+    }
+
     // Convert records to sheet data
     const data = records.map(r => ({
         'Producto': r.name,
@@ -2833,7 +2919,19 @@ function generateExcel(records, dateFile, workerFilePart) {
         'Averías': ''
     });
 
-    const ws = XLSX.utils.json_to_sheet(data, { origin: 'A1' });
+    // Si hay filas de info (nombre auxiliar), las añadimos arriba como AOA
+    // y luego los datos de la tabla desde la fila siguiente.
+    let ws;
+    if (infoRows.length) {
+        const dataRows = XLSX.utils.json_to_sheet(data);
+        // Convertir json_to_sheet a AOA para poder concatenar con infoRows
+        const tableAOA = XLSX.utils.sheet_to_json(dataRows, { header: 1 });
+        const fullAOA = [...infoRows, ...tableAOA];
+        ws = XLSX.utils.aoa_to_sheet(fullAOA);
+    } else {
+        ws = XLSX.utils.json_to_sheet(data, { origin: 'A1' });
+    }
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
     // Set column widths for better readability
