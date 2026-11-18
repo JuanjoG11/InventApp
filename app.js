@@ -2340,7 +2340,7 @@ function clearAllHistory() {
 // auxiliar lo cuente de nuevo. El conteo anterior se conserva con countIndex
 // para mostrarlo en el PDF como "Conteo 1", "Conteo 2", etc.
 window.recountProduct = async function(blockNum, itemId, itemName) {
-    if (!confirm(`¿Devolver "${itemName}" del Bloque ${blockNum} para reconteo?\n\nEl conteo actual se guardará como "Conteo 1" y el auxiliar deberá contarlo de nuevo.`)) return;
+    if (!confirm(`¿Devolver "${itemName}" del Bloque ${blockNum} para reconteo?\n\nEl conteo actual se guardará como "Conteo anterior" y el auxiliar deberá contarlo de nuevo.`)) return;
 
     // Encontrar el conteo activo de este item
     const activeIdx = AppState.counts.findIndex(c => !(c.archived) && (c.item?.id === itemId || c.task_id === itemId));
@@ -2351,29 +2351,40 @@ window.recountProduct = async function(blockNum, itemId, itemName) {
 
     const activeCount = AppState.counts[activeIdx];
 
-    // Calcular el próximo índice de conteo para este item
-    const existingArchived = AppState.counts.filter(c => c.archived && (c.item?.id === itemId || c.task_id === itemId));
-    const nextIndex = existingArchived.length + 1;
+    // Calcular el próximo índice consultando Supabase directamente
+    // para no depender de que los archivados previos estén en memoria.
+    let nextIndex = AppState.counts.filter(c => c.archived && (c.item?.id === itemId || (c.task_id && c.task_id.startsWith(itemId + '__r')))).length + 1;
+
+    if (USE_SUPABASE && supabaseClient && navigator.onLine) {
+        try {
+            // Contar cuántos registros archivados ya existen en Supabase para este item
+            const { data: existingArchived } = await supabaseClient
+                .from('worker_counts')
+                .select('id, task_id')
+                .like('task_id', `${itemId}__r%`);
+            if (existingArchived && existingArchived.length >= nextIndex) {
+                nextIndex = existingArchived.length + 1;
+            }
+        } catch (e) {
+            console.warn('Error consultando archivados en Supabase:', e);
+        }
+    }
 
     // Archivar el conteo activo como "Conteo N"
     AppState.counts[activeIdx] = { ...activeCount, archived: true, countIndex: nextIndex };
-
     saveData();
 
     // En Supabase: renombramos el task_id del registro actual añadiendo "__rN"
-    // para liberar el slot original (sin borrar, así se conserva el historial).
     if (USE_SUPABASE && supabaseClient && navigator.onLine) {
         try {
-            // Buscar el registro actual en worker_counts
             const { data: existing } = await supabaseClient
                 .from('worker_counts')
-                .select('id, task_id, worker_email')
+                .select('id, task_id')
                 .eq('task_id', itemId)
                 .limit(1)
                 .single();
 
             if (existing) {
-                // Renombrar el task_id para archivar (ej: "abc123__r1")
                 const archivedTaskId = `${itemId}__r${nextIndex}`;
                 await supabaseClient
                     .from('worker_counts')
@@ -2397,8 +2408,8 @@ window.finishBlock = async function(blockNum) {
         return;
     }
 
-    // Verificar que todos los productos del bloque estén contados
-    const uncounted = blockItems.filter(t => !AppState.counts.find(c => c.item.id === t.id));
+    // Verificar que todos los productos del bloque estén contados (solo conteos activos)
+    const uncounted = blockItems.filter(t => !AppState.counts.find(c => !c.archived && c.item?.id === t.id));
     if (uncounted.length > 0) {
         const proceed = confirm(
             `⚠️ El Bloque ${blockNum} tiene ${uncounted.length} producto(s) sin contar.\n\n` +
@@ -2507,9 +2518,11 @@ window.finishBlock = async function(blockNum) {
             unidades: parseInt(e.unidades) || 0,
             total: ((parseInt(e.cajas) || 0) * emb) + (parseInt(e.unidades) || 0)
         }));
-        // Agregar el conteo final (activo) al historial
+        // El índice del conteo activo es el máximo de los archivados + 1
+        // (no archivedEntries.length+1, que puede estar incompleto si no se cargaron todos)
+        const maxArchivedIndex = archivedEntries.reduce((m, e) => Math.max(m, e.countIndex || 1), 0);
         countHistory.push({
-            index: (archivedEntries.length || 0) + 1,
+            index: maxArchivedIndex + 1,
             cajas, unidades, total: totalContado
         });
 
@@ -2861,8 +2874,11 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart, wor
         doc.text(`Contado por: ${workerLabel}`, 14, 30);
     }
 
-    // Detectar cuántos conteos hubo (máximo entre todos los productos)
-    const maxCounts = records.reduce((m, r) => Math.max(m, r.countHistory ? r.countHistory.length : 1), 1);
+    // Detectar cuántos conteos hubo (índice máximo entre todos los productos)
+    const maxCounts = records.reduce((m, r) => {
+        if (!r.countHistory || !r.countHistory.length) return Math.max(m, 1);
+        return Math.max(m, ...r.countHistory.map(h => h.index));
+    }, 1);
     const hasRecount = maxCounts > 1;
 
     // Cabeceras dinámicas según si hubo reconteos
@@ -2908,18 +2924,38 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart, wor
         const fmtTotal = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(totalDiffValorRaw);
         const emptyCountCells = countCols.map(() => '');
         tableData.push(['Totales', '', '', '', ...emptyCountCells, '', fmtTotal, '']);
-        // Anchos dinámicos: 3 col por conteo (Cj=10, Uds=10, Tot=12)
-        colStyles = { 0: { cellWidth: 50 }, 1: { cellWidth: 18 }, 2: { cellWidth: 10 }, 3: { cellWidth: 16 } };
+
+        // Anchos adaptativos según cuántos conteos haya.
+        // Página A4 landscape = 297mm; márgenes 10mm c/lado → 277mm útiles.
+        // Columnas fijas: Producto(45) + Código(16) + Emb(9) + Inv(14) + DifUds(13) + DifValor(24) + Averías(11) = 132mm
+        // Resto disponible para las columnas de conteos
+        const FIXED_WIDTH = 132;
+        const AVAILABLE   = 277 - FIXED_WIDTH;                    // mm disponibles para conteos
+        const COUNT_COLS  = maxCounts * 3;                        // total columnas de conteo
+        const colW        = Math.max(7, Math.floor(AVAILABLE / COUNT_COLS)); // mínimo 7mm
+        const totW        = Math.min(colW + 2, colW);             // Tot igual a los demás
+
+        // Recalcular Producto si hay muchos conteos (comprimir un poco)
+        const prodW = maxCounts <= 2 ? 50 :
+                      maxCounts <= 4 ? 42 :
+                      maxCounts <= 6 ? 34 : 28;
+
+        colStyles = {
+            0: { cellWidth: prodW },
+            1: { cellWidth: 16 },
+            2: { cellWidth: 9  },
+            3: { cellWidth: 14 }
+        };
         for (let i = 0; i < maxCounts; i++) {
             const base = 4 + i * 3;
-            colStyles[base]     = { cellWidth: 10, halign: 'center' };  // Cj
-            colStyles[base + 1] = { cellWidth: 10, halign: 'center' };  // Uds
-            colStyles[base + 2] = { cellWidth: 12, halign: 'center' };  // Tot
+            colStyles[base]     = { cellWidth: colW, halign: 'center' };   // Cj
+            colStyles[base + 1] = { cellWidth: colW, halign: 'center' };   // Uds
+            colStyles[base + 2] = { cellWidth: colW, halign: 'center' };   // Tot
         }
         const diffUdsCol = 4 + maxCounts * 3;
-        colStyles[diffUdsCol]     = { cellWidth: 14, halign: 'center' };
-        colStyles[diffUdsCol + 1] = { cellWidth: 26, halign: 'right' };
-        colStyles[diffUdsCol + 2] = { cellWidth: 12, halign: 'center' };
+        colStyles[diffUdsCol]     = { cellWidth: 13, halign: 'center' };
+        colStyles[diffUdsCol + 1] = { cellWidth: 24, halign: 'right'  };
+        colStyles[diffUdsCol + 2] = { cellWidth: 11, halign: 'center' };
     }
 
     doc.autoTable({
@@ -2927,16 +2963,16 @@ function generatePDF(records, dateStr, dateFile, blockLabel, workerFilePart, wor
         head: [headRow],
         body: tableData,
         styles: {
-            fontSize: 8,
-            cellPadding: 2.5,
+            fontSize: maxCounts <= 2 ? 8 : maxCounts <= 4 ? 7 : maxCounts <= 6 ? 6 : 5,
+            cellPadding: maxCounts <= 4 ? 2.5 : 1.8,
             textColor: [30, 41, 59],
-            minCellHeight: 7
+            minCellHeight: 6
         },
         headStyles: {
             fillColor: [249, 115, 22],
             textColor: 255,
             fontStyle: 'bold',
-            fontSize: 8
+            fontSize: maxCounts <= 2 ? 8 : maxCounts <= 4 ? 7 : maxCounts <= 6 ? 6 : 5
         },
         alternateRowStyles: {
             fillColor: [255, 247, 237]
@@ -3018,7 +3054,10 @@ function generateExcel(records, dateFile, workerFilePart, workerLabel) {
     }
 
     // Convert records to sheet data — columnas dinámicas si hubo reconteos
-    const maxCounts = records.reduce((m, r) => Math.max(m, r.countHistory ? r.countHistory.length : 1), 1);
+    const maxCounts = records.reduce((m, r) => {
+        if (!r.countHistory || !r.countHistory.length) return Math.max(m, 1);
+        return Math.max(m, ...r.countHistory.map(h => h.index));
+    }, 1);
     const hasRecount = maxCounts > 1;
 
     const data = records.map(r => {
