@@ -1493,3 +1493,25 @@ select.input-form option {
 .dark-theme .publish-bar-info {
     color: #94a3b8;
 }
+
+/* =====================================================
+   MÓDULO CRONOGRAMA TYM & TAT
+   ===================================================== */
+
+#admin-tab-cronograma .data-table tr {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+#admin-tab-cronograma .data-table tr:hover {
+    background: rgba(29,78,216,0.10) !important;
+}
+#crono-day-panel {
+    animation: fadeInUp 0.25s ease;
+}
+#crono-seguimiento-panel {
+    animation: fadeInUp 0.25s ease;
+}
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}

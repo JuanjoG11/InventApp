@@ -312,6 +312,10 @@ async function restoreLocalSession() {
             requestNotificationPermission();
         }
 
+        if (AppState.currentRole === 'admin') {
+            setTimeout(() => cronoIniciarPanel(), 300);
+        }
+
         return true;
     } catch (error) {
         console.warn('Error restaurando sesión local:', error);
@@ -660,6 +664,10 @@ async function signInUser(user) {
     
     subscribeTaskAssignments();
     showToast(`Bienvenido ${AppState.currentUserName}`, 'success');
+    // Si el admin acaba de entrar, inicializar el panel de carga automática
+    if (role === 'admin') {
+        setTimeout(() => cronoIniciarPanel(), 300);
+    }
 }
 
 function updateUserDisplay() {
@@ -1767,9 +1775,10 @@ function switchAdminTab(tabId) {
     setTimeout(() => activeContent.classList.add('active'), 50);
 
     // Re-renderizar el contenido del tab al activarlo
-    if (tabId === 'assign') renderAssignTab();
+    if (tabId === 'assign') { renderAssignTab(); cronoIniciarPanel(); }
     if (tabId === 'blocks') renderBlocksTab();
     if (tabId === 'monitor') updateAdminDashboard();
+    if (tabId === 'cronograma') initCronogramaTab();
     if (tabId === 'history') {
         // Limpiar filtros de fecha para mostrar todo el historial al abrir
         const fromEl = document.getElementById('filter-date-from');
@@ -3403,6 +3412,916 @@ async function submitProductCount() {
     } else {
         showToast('¡Conteo guardado localmente!', 'success');
     }
+}
+
+// =============================================================
+//  MÓDULO CARGA AUTOMÁTICA POR CRONOGRAMA
+//  Lee CRONO_DETALLE (cronograma_data.js) y puebla los bloques
+//  sin que el admin tenga que subir ningún Excel manualmente.
+// =============================================================
+
+/** Fecha ISO de hoy */
+function cronoHoyISO() {
+    const t = new Date();
+    return t.getFullYear() + '-' +
+        String(t.getMonth()+1).padStart(2,'0') + '-' +
+        String(t.getDate()).padStart(2,'0');
+}
+
+/**
+ * Inicializa el panel de carga automática:
+ * - Pone la fecha de hoy (o el día más cercano del cronograma)
+ * - Muestra descripción del día
+ */
+function cronoIniciarPanel() {
+    const dateEl = document.getElementById('crono-auto-date');
+    if (!dateEl) return;
+
+    const hoy = cronoHoyISO();
+    // Buscar si hoy tiene datos; si no, el día más próximo futuro
+    const fechas = Object.keys(CRONO_DETALLE).sort();
+    let fecha = fechas.find(f => f >= hoy) || fechas[fechas.length - 1];
+    dateEl.value = fecha;
+    cronoPrevisualizarDia();
+}
+
+/**
+ * Actualiza la descripción y previsualización de bloques según la fecha elegida.
+ */
+function cronoPrevisualizarDia() {
+    const dateEl  = document.getElementById('crono-auto-date');
+    const descEl  = document.getElementById('crono-auto-desc');
+    const btnEl   = document.getElementById('btn-crono-load');
+    const preview = document.getElementById('crono-auto-preview');
+    const grid    = document.getElementById('crono-auto-preview-grid');
+
+    if (!dateEl || !descEl) return;
+    const fecha = dateEl.value;
+
+    if (!fecha || !CRONO_DETALLE[fecha]) {
+        descEl.textContent = 'No hay conteo programado para este día.';
+        if (btnEl) btnEl.disabled = true;
+        if (preview) preview.style.display = 'none';
+        return;
+    }
+
+    const personas = CRONO_DETALLE[fecha];
+    const numPersonas = Object.keys(personas).length;
+    const totalRefs   = Object.values(personas).reduce((s,p) => s + p.length, 0);
+
+    // Info del cronograma para ese día
+    const cronoRow = CRONO_DATA.find(r => r[0] === fecha);
+    let detalle = '';
+    if (cronoRow) {
+        const marcas = [
+            cronoRow[3] ? 'Alpina ' + cronoRow[3] : '',
+            cronoRow[4] ? 'Familia ' + cronoRow[4] : '',
+            cronoRow[5] ? 'Fleischmann ' + cronoRow[5] : '',
+            cronoRow[6] ? 'Postobón ' + cronoRow[6] : '',
+        ].filter(Boolean).join(' · ');
+        detalle = marcas + ' — ' + cronoRow[7] + ' refs, ' + cronoRow[9] + ' personas';
+        if (cronoRow[10]) detalle += ' · ⚠️ ' + cronoRow[10];
+    }
+
+    const [y,m,d] = fecha.split('-');
+    const meses = ['','enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    descEl.innerHTML = '<strong>' + d + ' de ' + meses[parseInt(m)] + ' de ' + y + '</strong> — ' + detalle;
+
+    if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = '<i data-lucide="download"></i> Cargar ' + numPersonas + ' bloques (' + totalRefs + ' refs)';
+    }
+
+    // Previsualización de cada bloque
+    if (preview && grid) {
+        preview.style.display = '';
+        const MARCA_COLOR = {
+            'Alpina':'#1d4ed8','Familia':'#7c3aed',
+            'Fleischmann':'#b45309','Postobón':'#dc2626',
+        };
+        grid.innerHTML = Object.keys(personas).map(Number).sort((a,b)=>a-b).map(pNum => {
+            const items = personas[pNum];
+            // Detectar marca principal de este bloque
+            const marcaCount = {};
+            items.forEach(it => { marcaCount[it.m] = (marcaCount[it.m]||0)+1; });
+            const marcaPrincipal = Object.entries(marcaCount).sort((a,b)=>b[1]-a[1])[0][0];
+            const tipo = items[0] ? items[0].t : '';
+            const color = MARCA_COLOR[marcaPrincipal] || '#475569';
+            return '<div style="background:var(--bg-secondary,#1e293b);border-radius:10px;padding:8px 14px;border-left:3px solid '+color+';min-width:140px;">' +
+                '<div style="font-weight:700;font-size:0.82rem;color:'+color+';">Bloque ' + pNum + '</div>' +
+                '<div style="font-size:0.8rem;margin-top:2px;">' + marcaPrincipal + ' <span style="color:var(--text-muted);">(' + tipo + ')</span></div>' +
+                '<div style="font-size:0.76rem;color:var(--text-muted);margin-top:2px;">' + items.length + ' referencias</div>' +
+                '</div>';
+        }).join('');
+    }
+
+    lucide.createIcons();
+}
+
+/**
+ * Carga los bloques del día seleccionado en AppState y los publica.
+ * Persona N del Excel → Bloque N de la app.
+ */
+function cronoCargarDia() {
+    const dateEl = document.getElementById('crono-auto-date');
+    if (!dateEl || !dateEl.value) return;
+    const fecha = dateEl.value;
+
+    if (!CRONO_DETALLE[fecha]) {
+        showToast('No hay datos para esa fecha.', 'danger');
+        return;
+    }
+
+    const personas = CRONO_DETALLE[fecha];
+    const numPersonas = Object.keys(personas).length;
+
+    // Confirmar si ya hay bloques cargados
+    const bloquesCargados = Object.keys(AppState.blocks).length;
+    if (bloquesCargados > 0) {
+        if (!confirm('Ya hay ' + bloquesCargados + ' bloques cargados. ¿Reemplazarlos con los del cronograma de hoy?')) return;
+    }
+
+    // Limpiar estado anterior
+    AppState.blocks = {};
+    AppState.counts = [];
+    AppState.todayTasks = [];
+    AppState.unpublishedChanges = false;
+
+    // Fijar la fecha del inventario
+    AppState.inventoryDate = fecha;
+    const dateInputEl = document.getElementById('inventory-date');
+    if (dateInputEl) dateInputEl.value = fecha;
+
+    // Crear bloque por persona
+    Object.keys(personas).map(Number).sort((a,b)=>a-b).forEach(pNum => {
+        const items = personas[pNum];
+        AppState.blocks[pNum] = items.map((it, idx) => ({
+            id:       fecha + '_b' + pNum + '_' + idx,
+            code:     it.c,
+            name:     it.n,
+            provider: it.m.toLowerCase(),
+            _marca:   it.m,
+            _tipo:    it.t,
+            _almacen: it.a,
+            _blockNum: pNum,
+            packaging: 1,
+            expectedInventory: 0,
+        }));
+    });
+
+    rebuildTodayTasksFromBlocks();
+    saveData();
+    AppState.unpublishedChanges = true;
+
+    renderAssignTab();
+    renderBlocksTab();
+
+    const totalRefs = Object.values(AppState.blocks).reduce((s,b) => s+b.length, 0);
+    showToast('✅ ' + numPersonas + ' bloques cargados con ' + totalRefs + ' referencias. Revisa y pulsa Publicar.', 'success');
+
+    // Mostrar la barra de publicar
+    const publishBar = document.getElementById('publish-bar');
+    if (publishBar) {
+        publishBar.style.display = 'flex';
+        const info = document.getElementById('publish-bar-info');
+        if (info) info.textContent = numPersonas + ' bloques listos';
+    }
+
+    lucide.createIcons();
+}
+
+// =============================================================
+//  MÓDULO CRONOGRAMA TYM & TAT
+//  Datos embebidos del Excel Inventarios_TYM_TAT_cronograma_v2
+// =============================================================
+
+/** Convierte "DD/MM/YYYY" a "YYYY-MM-DD" */
+function cronoFechaISO(ddmmyyyy) {
+    const [d, m, y] = ddmmyyyy.split('/');
+    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+}
+
+/** Colores por marca */
+const CRONO_COLORS = {
+    'Alpina':       { bg: '#1d4ed8', light: '#dbeafe', text: '#1e40af' },
+    'Familia':      { bg: '#7c3aed', light: '#ede9fe', text: '#6d28d9' },
+    'Fleischmann':  { bg: '#b45309', light: '#fef3c7', text: '#92400e' },
+    'Postobón':     { bg: '#dc2626', light: '#fee2e2', text: '#991b1b' },
+    'Seguimiento':  { bg: '#0891b2', light: '#cffafe', text: '#0e7490' },
+};
+
+/** Colores tipo de conteo */
+const CRONO_TIPO_BADGE = {
+    'Total':        'background:#14532d;color:#bbf7d0;',
+    'Frío':         'background:#1e3a5f;color:#bfdbfe;',
+    'Seco':         'background:#78350f;color:#fde68a;',
+    'Seguimiento':  'background:#134e4a;color:#99f6e4;',
+};
+
+// ---- DATOS: CRONOGRAMA ----
+const CRONO_DATA = [
+    // fecha_iso | dia | semana | alpina | familia | fleischmann | postobon | refs | mins | personas | obs
+    ['2026-11-20','Viernes','Arranque','','','Total','',93,179,3,'Arranque: primer total de Fleischmann. Los seguimientos diarios inician el lunes 23'],
+    ['2026-11-23','Lunes','Arranque','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-11-24','Martes','Arranque','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-11-25','Miércoles','Arranque','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-11-26','Jueves','Arranque','Seguimiento','Seguimiento','','Total',66,151,5,'Arranque: primer total de Postobón'],
+    ['2026-11-27','Viernes','Arranque','Frío','Seguimiento','','',121,235,5,'Frío extraordinario de punto de partida, temprano y antes de descargar la mula'],
+    ['2026-11-28','Sábado','Arranque','Seguimiento','Seguimiento','Total','',100,203,5,'Fleischmann pasa al sábado para no coincidir con el frío extraordinario de Alpina'],
+    ['2026-11-30','Lunes','Arranque','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-01','Martes','1','Total','Seguimiento','','',169,323,7,'Total Alpina: el día 1 no llega mula'],
+    ['2026-12-02','Miércoles','1','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-03','Jueves','1','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-04','Viernes','1','Seguimiento','Seguimiento','Total','',100,203,5,''],
+    ['2026-12-05','Sábado','1','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-07','Lunes','2','Frío','Seguimiento','','',121,235,5,'Temprano, antes de descargar la mula'],
+    ['2026-12-09','Miércoles','2','Seguimiento','Seguimiento','','Total',66,151,5,'Postobón pasa al miércoles por el festivo del martes 8'],
+    ['2026-12-10','Jueves','2','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-11','Viernes','2','Seguimiento','Seguimiento','Total','',100,203,5,''],
+    ['2026-12-12','Sábado','2','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-14','Lunes','3','Seco','Seguimiento','','',50,95,3,'Temprano, antes de descargar la mula'],
+    ['2026-12-15','Martes','3','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-16','Miércoles','3','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-17','Jueves','3','Seguimiento','Total','','',132,249,5,''],
+    ['2026-12-18','Viernes','3','Seguimiento','Seguimiento','Total','',100,203,5,''],
+    ['2026-12-19','Sábado','3','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-21','Lunes','4','Frío','Seguimiento','','',121,235,5,'Temprano, antes de descargar la mula'],
+    ['2026-12-22','Martes','4','Seguimiento','Seguimiento','','Total',66,151,5,''],
+    ['2026-12-23','Miércoles','4','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-24','Jueves','4','Seguimiento','Seguimiento','Total','',100,203,5,'Fleischmann pasa al jueves por el festivo del viernes 25'],
+    ['2026-12-26','Sábado','4','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-27','Domingo','4','Total','Total','Total','Total',446,854,16,'Inventario físico general anual de TYM y TAT: las cuatro marcas el mismo día, con la operación detenida (domingo)'],
+    ['2026-12-28','Lunes','5','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-29','Martes','5','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-30','Miércoles','5','Seguimiento','Seguimiento','','',7,24,2,''],
+    ['2026-12-31','Jueves','5','Seguimiento','Seguimiento','','',7,24,2,''],
+];
+
+// ---- DATOS: ASIGNACIÓN POR PERSONA ----
+const CRONO_ASIGNACION = [
+    // [fecha_iso, dia, persona, marca, conteo, refs, mins, quien]
+    ['2026-11-20','Viernes','Persona 1','Fleischmann','Total',32,59,''],
+    ['2026-11-20','Viernes','Persona 2','Fleischmann','Total',30,59,''],
+    ['2026-11-20','Viernes','Persona 3','Fleischmann','Total',31,61,''],
+    ['2026-11-23','Lunes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-23','Lunes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-24','Martes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-24','Martes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-25','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-25','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-26','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-26','Jueves','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-26','Jueves','Persona 3','Postobón','Total',22,42,''],
+    ['2026-11-26','Jueves','Persona 4','Postobón','Total',19,44,''],
+    ['2026-11-26','Jueves','Persona 5','Postobón','Total',18,41,''],
+    ['2026-11-27','Viernes','Persona 1','Alpina','Frío',25,58,''],
+    ['2026-11-27','Viernes','Persona 2','Alpina','Frío',29,56,''],
+    ['2026-11-27','Viernes','Persona 3','Alpina','Frío',38,57,''],
+    ['2026-11-27','Viernes','Persona 4','Alpina','Frío',27,56,''],
+    ['2026-11-27','Viernes','Persona 5','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-28','Sábado','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-28','Sábado','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-11-28','Sábado','Persona 3','Fleischmann','Total',32,59,''],
+    ['2026-11-28','Sábado','Persona 4','Fleischmann','Total',30,59,''],
+    ['2026-11-28','Sábado','Persona 5','Fleischmann','Total',31,61,''],
+    ['2026-11-30','Lunes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-11-30','Lunes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-01','Martes','Persona 1','Alpina','Total',23,52,''],
+    ['2026-12-01','Martes','Persona 2','Alpina','Total',26,54,''],
+    ['2026-12-01','Martes','Persona 3','Alpina','Total',36,54,''],
+    ['2026-12-01','Martes','Persona 4','Alpina','Total',22,51,''],
+    ['2026-12-01','Martes','Persona 5','Alpina','Total',31,54,''],
+    ['2026-12-01','Martes','Persona 6','Alpina','Total',29,52,''],
+    ['2026-12-01','Martes','Persona 7','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-02','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-02','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-03','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-03','Jueves','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-04','Viernes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-04','Viernes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-04','Viernes','Persona 3','Fleischmann','Total',32,59,''],
+    ['2026-12-04','Viernes','Persona 4','Fleischmann','Total',30,59,''],
+    ['2026-12-04','Viernes','Persona 5','Fleischmann','Total',31,61,''],
+    ['2026-12-05','Sábado','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-05','Sábado','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-07','Lunes','Persona 1','Alpina','Frío',25,58,''],
+    ['2026-12-07','Lunes','Persona 2','Alpina','Frío',29,56,''],
+    ['2026-12-07','Lunes','Persona 3','Alpina','Frío',38,57,''],
+    ['2026-12-07','Lunes','Persona 4','Alpina','Frío',27,56,''],
+    ['2026-12-07','Lunes','Persona 5','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-09','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-09','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-09','Miércoles','Persona 3','Postobón','Total',22,42,''],
+    ['2026-12-09','Miércoles','Persona 4','Postobón','Total',19,44,''],
+    ['2026-12-09','Miércoles','Persona 5','Postobón','Total',18,41,''],
+    ['2026-12-10','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-10','Jueves','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-11','Viernes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-11','Viernes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-11','Viernes','Persona 3','Fleischmann','Total',32,59,''],
+    ['2026-12-11','Viernes','Persona 4','Fleischmann','Total',30,59,''],
+    ['2026-12-11','Viernes','Persona 5','Fleischmann','Total',31,61,''],
+    ['2026-12-12','Sábado','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-12','Sábado','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-14','Lunes','Persona 1','Alpina','Seco',24,44,''],
+    ['2026-12-14','Lunes','Persona 2','Alpina','Seco',24,44,''],
+    ['2026-12-14','Lunes','Persona 3','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-15','Martes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-15','Martes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-16','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-16','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-17','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-17','Jueves','Persona 2','Familia','Total',35,58,''],
+    ['2026-12-17','Jueves','Persona 3','Familia','Total',30,59,''],
+    ['2026-12-17','Jueves','Persona 4','Familia','Total',35,56,''],
+    ['2026-12-17','Jueves','Persona 5','Familia','Total',27,58,''],
+    ['2026-12-18','Viernes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-18','Viernes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-18','Viernes','Persona 3','Fleischmann','Total',32,59,''],
+    ['2026-12-18','Viernes','Persona 4','Fleischmann','Total',30,59,''],
+    ['2026-12-18','Viernes','Persona 5','Fleischmann','Total',31,61,''],
+    ['2026-12-19','Sábado','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-19','Sábado','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-21','Lunes','Persona 1','Alpina','Frío',25,58,''],
+    ['2026-12-21','Lunes','Persona 2','Alpina','Frío',29,56,''],
+    ['2026-12-21','Lunes','Persona 3','Alpina','Frío',38,57,''],
+    ['2026-12-21','Lunes','Persona 4','Alpina','Frío',27,56,''],
+    ['2026-12-21','Lunes','Persona 5','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-22','Martes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-22','Martes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-22','Martes','Persona 3','Postobón','Total',22,42,''],
+    ['2026-12-22','Martes','Persona 4','Postobón','Total',19,44,''],
+    ['2026-12-22','Martes','Persona 5','Postobón','Total',18,41,''],
+    ['2026-12-23','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-23','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-24','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-24','Jueves','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-24','Jueves','Persona 3','Fleischmann','Total',32,59,''],
+    ['2026-12-24','Jueves','Persona 4','Fleischmann','Total',30,59,''],
+    ['2026-12-24','Jueves','Persona 5','Fleischmann','Total',31,61,''],
+    ['2026-12-26','Sábado','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-26','Sábado','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-27','Domingo','Persona 1','Alpina','Total',23,52,''],
+    ['2026-12-27','Domingo','Persona 2','Alpina','Total',26,54,''],
+    ['2026-12-27','Domingo','Persona 3','Alpina','Total',36,54,''],
+    ['2026-12-27','Domingo','Persona 4','Alpina','Total',22,51,''],
+    ['2026-12-27','Domingo','Persona 5','Alpina','Total',31,54,''],
+    ['2026-12-27','Domingo','Persona 6','Alpina','Total',29,52,''],
+    ['2026-12-27','Domingo','Persona 7','Familia','Total',35,58,''],
+    ['2026-12-27','Domingo','Persona 8','Familia','Total',30,59,''],
+    ['2026-12-27','Domingo','Persona 9','Familia','Total',35,56,''],
+    ['2026-12-27','Domingo','Persona 10','Familia','Total',27,58,''],
+    ['2026-12-27','Domingo','Persona 11','Fleischmann','Total',32,59,''],
+    ['2026-12-27','Domingo','Persona 12','Fleischmann','Total',30,59,''],
+    ['2026-12-27','Domingo','Persona 13','Fleischmann','Total',31,61,''],
+    ['2026-12-27','Domingo','Persona 14','Postobón','Total',22,42,''],
+    ['2026-12-27','Domingo','Persona 15','Postobón','Total',19,44,''],
+    ['2026-12-27','Domingo','Persona 16','Postobón','Total',18,41,''],
+    ['2026-12-28','Lunes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-28','Lunes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-29','Martes','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-29','Martes','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-30','Miércoles','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-30','Miércoles','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+    ['2026-12-31','Jueves','Persona 1','Alpina','Seguimiento',5,16,''],
+    ['2026-12-31','Jueves','Persona 2','Familia','Seguimiento',2,7,'Andrés Felipe Ríos Caicedo (separador), antes de iniciar la separación'],
+];
+
+// ---- DATOS: SEGUIMIENTO DIARIO ----
+// [fecha_iso, dia, marca, codigo, producto, almacen]
+const CRONO_SEGUIMIENTO = [
+    ['2026-11-23','Lunes','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-11-23','Lunes','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-11-23','Lunes','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-11-23','Lunes','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-11-23','Lunes','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-11-23','Lunes','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-11-23','Lunes','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-11-24','Martes','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-11-24','Martes','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-11-24','Martes','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-11-24','Martes','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-11-24','Martes','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-11-24','Martes','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-11-24','Martes','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-11-25','Miércoles','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-11-25','Miércoles','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-11-25','Miércoles','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-11-25','Miércoles','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-11-25','Miércoles','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-11-25','Miércoles','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-11-25','Miércoles','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-11-26','Jueves','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-11-26','Jueves','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-11-26','Jueves','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-11-26','Jueves','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-11-26','Jueves','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-11-26','Jueves','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-11-26','Jueves','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-11-27','Viernes','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-11-27','Viernes','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-11-27','Viernes','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-11-27','Viernes','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-11-27','Viernes','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-11-27','Viernes','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-11-27','Viernes','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-11-28','Sábado','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-11-28','Sábado','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-11-28','Sábado','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-11-28','Sábado','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-11-28','Sábado','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-11-28','Sábado','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-11-28','Sábado','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-11-30','Lunes','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-11-30','Lunes','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-11-30','Lunes','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-11-30','Lunes','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-11-30','Lunes','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-11-30','Lunes','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-11-30','Lunes','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-01','Martes','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-01','Martes','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-01','Martes','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-01','Martes','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-01','Martes','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-01','Martes','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-01','Martes','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-02','Miércoles','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-02','Miércoles','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-02','Miércoles','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-02','Miércoles','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-02','Miércoles','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-02','Miércoles','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-02','Miércoles','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-03','Jueves','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-03','Jueves','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-03','Jueves','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-03','Jueves','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-03','Jueves','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-03','Jueves','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-12-03','Jueves','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-12-04','Viernes','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-04','Viernes','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-04','Viernes','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-04','Viernes','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-04','Viernes','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-04','Viernes','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-12-04','Viernes','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-05','Sábado','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-05','Sábado','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-05','Sábado','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-05','Sábado','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-05','Sábado','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-05','Sábado','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-05','Sábado','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-07','Lunes','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-07','Lunes','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-07','Lunes','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-07','Lunes','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-07','Lunes','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-07','Lunes','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-07','Lunes','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-09','Miércoles','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-09','Miércoles','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-09','Miércoles','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-09','Miércoles','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-09','Miércoles','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-09','Miércoles','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-12-09','Miércoles','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-12-10','Jueves','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-10','Jueves','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-10','Jueves','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-10','Jueves','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-10','Jueves','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-10','Jueves','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-12-10','Jueves','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-11','Viernes','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-11','Viernes','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-11','Viernes','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-11','Viernes','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-11','Viernes','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-11','Viernes','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-11','Viernes','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-12','Sábado','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-12','Sábado','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-12','Sábado','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-12','Sábado','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-12','Sábado','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-12','Sábado','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-12','Sábado','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-14','Lunes','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-14','Lunes','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-14','Lunes','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-14','Lunes','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-14','Lunes','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-14','Lunes','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-12-14','Lunes','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-12-15','Martes','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-15','Martes','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-15','Martes','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-15','Martes','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-15','Martes','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-15','Martes','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-12-15','Martes','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-16','Miércoles','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-16','Miércoles','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-16','Miércoles','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-16','Miércoles','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-16','Miércoles','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-16','Miércoles','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-16','Miércoles','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-17','Jueves','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-17','Jueves','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-17','Jueves','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-17','Jueves','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-17','Jueves','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-17','Jueves','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-17','Jueves','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-18','Viernes','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-18','Viernes','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-18','Viernes','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-18','Viernes','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-18','Viernes','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-18','Viernes','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-12-18','Viernes','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-12-19','Sábado','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-19','Sábado','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-19','Sábado','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-19','Sábado','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-19','Sábado','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-19','Sábado','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-12-19','Sábado','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-21','Lunes','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-21','Lunes','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-21','Lunes','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-21','Lunes','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-21','Lunes','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-21','Lunes','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-21','Lunes','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-22','Martes','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-22','Martes','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-22','Martes','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-22','Martes','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-22','Martes','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-22','Martes','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-22','Martes','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-23','Miércoles','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-23','Miércoles','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-23','Miércoles','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-23','Miércoles','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-23','Miércoles','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-23','Miércoles','Familia','201902','PANI. HUMEDOS PEQUENIN MANZANILLA 24X80',''],
+    ['2026-12-23','Miércoles','Familia','203636','PROT. NOSOTRAS DIARIOS NORMAL 36X15 PSVP',''],
+    ['2026-12-24','Jueves','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-24','Jueves','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-24','Jueves','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-24','Jueves','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-24','Jueves','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-24','Jueves','Familia','204319','PROT. NOSOTRAS DIARIOS INVISIBLE 36X15 PSVP',''],
+    ['2026-12-24','Jueves','Familia','204318','PROT. NOSOTRAS DIARIOS CLASICA 50X1 PSVP',''],
+    ['2026-12-26','Sábado','Alpina','6219','ALPINETTE FRE 140G','FRIO'],
+    ['2026-12-26','Sábado','Alpina','10006','ALPINITO FRE 45G X4UND TAT','FRIO'],
+    ['2026-12-26','Sábado','Alpina','11696','BOGGY CZA VASO 108G','FRIO'],
+    ['2026-12-26','Sábado','Alpina','11697','BOGGY FRE VASO 108G','FRIO'],
+    ['2026-12-26','Sábado','Alpina','11698','BOGGY MOR VASO 108G','FRIO'],
+    ['2026-12-26','Sábado','Familia','202453','PAP.HIG.FAMILIA ORIG HI 48PQX2R 20M FSC-M',''],
+    ['2026-12-26','Sábado','Familia','202452','PAP.HIG.FAMILIA CLASICO HI 48PQX4R 15M FSC-M',''],
+    ['2026-12-27','Domingo','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-27','Domingo','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-27','Domingo','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-27','Domingo','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-27','Domingo','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-27','Domingo','Familia','202475','PAP.HIG.ACMAX MEGA HI48PQX1R 29,6M FSC-M',''],
+    ['2026-12-27','Domingo','Familia','202476','PAP.HIG.EXPERT 48PQX1R HI 26M FSC-M',''],
+    ['2026-12-28','Lunes','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-28','Lunes','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-28','Lunes','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-28','Lunes','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-28','Lunes','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-28','Lunes','Familia','200260','PANI. HUM. PEQUENIN ALMENDRA 24X24 RESE',''],
+    ['2026-12-28','Lunes','Familia','204315','TOAL.NATURAL INVISIBLE CLASICA 24X10PSVP',''],
+    ['2026-12-29','Martes','Alpina','8602','BON YURT ZUC 170G','FRIO'],
+    ['2026-12-29','Martes','Alpina','8605','BON YURT CHOCOKR 169G','FRIO'],
+    ['2026-12-29','Martes','Alpina','8649','BON YURT BLACK 173G','FRIO'],
+    ['2026-12-29','Martes','Alpina','15822','ALPIN BOTELLA CHOCOLATE 300ML','SECO'],
+    ['2026-12-29','Martes','Alpina','17104','LECHE LECHE ALPINA BOL 1000ML','SECO'],
+    ['2026-12-29','Martes','Familia','200260','PANI. HUM. PEQUENIN ALMENDRA 24X24 RESE',''],
+    ['2026-12-29','Martes','Familia','204315','TOAL.NATURAL INVISIBLE CLASICA 24X10PSVP',''],
+    ['2026-12-30','Miércoles','Alpina','8633','BON YURT CHOCGOZ 171G','FRIO'],
+    ['2026-12-30','Miércoles','Alpina','12476','BY PIAZZA 174G','FRIO'],
+    ['2026-12-30','Miércoles','Alpina','4430','ALPIN CHOC CAJ 200ML','SECO'],
+    ['2026-12-30','Miércoles','Alpina','4201','YOG ORIG FRE VASO 150G','FRIO'],
+    ['2026-12-30','Miércoles','Alpina','17780','BON YURT JET 170G','FRIO'],
+    ['2026-12-30','Miércoles','Familia','201748','TOALLA EXTRAPROTECCION TELA 24X6 PSVP',''],
+    ['2026-12-30','Miércoles','Familia','202472','PAP.HIG.ACMAX MEGA HI 8PQX4R 29,6M FSC-M',''],
+    ['2026-12-31','Jueves','Alpina','1202','Q PARME RALL BOL 40G','FRIO'],
+    ['2026-12-31','Jueves','Alpina','4202','YOG ORIG MELOC VASO 150G','FRIO'],
+    ['2026-12-31','Jueves','Alpina','4205','YOG ORIG MORA VASO 150G','FRIO'],
+    ['2026-12-31','Jueves','Alpina','845074','DS 1 AVENA ALPINA BOT PRECIO ESP','FRIO'],
+    ['2026-12-31','Jueves','Alpina','4766','YOGO FRE VASO 150G','FRIO'],
+    ['2026-12-31','Jueves','Familia','202477','PAP.HIG.EXPERT HI 6PQX4R 26M FSC-M',''],
+    ['2026-12-31','Jueves','Familia','203707','PANI. HUM. PEQUENIN ALMENDRA 12X100',''],
+];
+
+// Estado de seguimiento (se persiste en localStorage)
+let cronoSeguimientoState = {};
+
+function cronoLoadState() {
+    try {
+        const raw = localStorage.getItem('ia_crono_seg');
+        if (raw) cronoSeguimientoState = JSON.parse(raw);
+    } catch(e) { cronoSeguimientoState = {}; }
+}
+
+function cronoSaveState() {
+    try { localStorage.setItem('ia_crono_seg', JSON.stringify(cronoSeguimientoState)); }
+    catch(e) {}
+}
+
+function cronoSegKey(fecha_iso, marca, codigo) {
+    return `${fecha_iso}|${marca}|${codigo}`;
+}
+
+/** Retorna la fecha ISO de hoy dentro del rango del cronograma, o el primer día */
+function cronoTodayOrFirst() {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const dd = String(today.getDate()).padStart(2,'0');
+    const iso = `${yyyy}-${mm}-${dd}`;
+    // Si hoy está en el cronograma, usarlo; si no, el primer día
+    const inCrono = CRONO_DATA.some(r => r[0] === iso);
+    if (inCrono) return iso;
+    // Buscar el día más cercano
+    const sorted = [...CRONO_DATA].map(r => r[0]).sort();
+    // Si hoy es antes del inicio, primer día; si es después del final, último día
+    if (iso < sorted[0]) return sorted[0];
+    if (iso > sorted[sorted.length-1]) return sorted[sorted.length-1];
+    // Buscar el próximo
+    return sorted.find(d => d >= iso) || sorted[sorted.length-1];
+}
+
+function cronogramaGoToday() {
+    const el = document.getElementById('crono-date-filter');
+    if (el) { el.value = cronoTodayOrFirst(); renderCronograma(); }
+}
+
+function cronogramaGoNext(dir) {
+    const el = document.getElementById('crono-date-filter');
+    if (!el) return;
+    const current = el.value;
+    const dates = CRONO_DATA.map(r => r[0]).sort();
+    const idx = dates.indexOf(current);
+    if (dir === 1 && idx < dates.length - 1) el.value = dates[idx + 1];
+    else if (dir === -1 && idx > 0) el.value = dates[idx - 1];
+    else if (idx === -1) el.value = dates[0];
+    renderCronograma();
+}
+
+/** Renderiza todo el tab cronograma */
+function renderCronograma() {
+    cronoLoadState();
+    const dateEl = document.getElementById('crono-date-filter');
+    const selectedDate = dateEl ? dateEl.value : '';
+
+    const dayRow = CRONO_DATA.find(r => r[0] === selectedDate);
+    const dayPanel = document.getElementById('crono-day-panel');
+    const segPanel = document.getElementById('crono-seguimiento-panel');
+
+    if (!dayRow) {
+        if (dayPanel) dayPanel.style.display = 'none';
+        if (segPanel) segPanel.style.display = 'none';
+        renderCronogramaTable();
+        return;
+    }
+
+    // Mostrar panel del día
+    if (dayPanel) dayPanel.style.display = '';
+
+    const [fecha_iso, diaNom, semana, alpina, familia, fleischmann, postobon, refs, mins, personas, obs] = dayRow;
+    const isToday = fecha_iso === cronoTodayOrFirst();
+    const isHoy   = (() => {
+        const t = new Date();
+        return fecha_iso === `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+    })();
+
+    // Badge fecha
+    const badge = document.getElementById('crono-day-badge');
+    const [y,m,d] = fecha_iso.split('-');
+    badge.textContent = `${d}/${m}`;
+    badge.style.background = isHoy ? '#16a34a' : '#1d4ed8';
+
+    // Título
+    const title = document.getElementById('crono-day-title');
+    title.innerHTML = `${diaNom} ${d} de ${['','enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][parseInt(m)]} de ${y}
+        ${isHoy ? '<span style="background:#16a34a;color:#fff;font-size:0.72rem;padding:2px 10px;border-radius:99px;margin-left:10px;vertical-align:middle;font-weight:600;">HOY</span>' : ''}
+        <span style="background:#334155;color:#94a3b8;font-size:0.72rem;padding:2px 8px;border-radius:99px;margin-left:6px;vertical-align:middle;">Semana ${semana}</span>`;
+
+    // Observación
+    const obsEl = document.getElementById('crono-day-obs');
+    obsEl.textContent = obs || '';
+    obsEl.style.display = obs ? '' : 'none';
+
+    // Stats
+    const statsEl = document.getElementById('crono-day-stats');
+    statsEl.innerHTML = `
+        <div style="text-align:center;padding:8px 14px;background:var(--bg-secondary,#1e293b);border-radius:12px;">
+            <div style="font-size:1.5rem;font-weight:800;color:#60a5fa;">${refs}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);">Refs.</div>
+        </div>
+        <div style="text-align:center;padding:8px 14px;background:var(--bg-secondary,#1e293b);border-radius:12px;">
+            <div style="font-size:1.5rem;font-weight:800;color:#34d399;">${mins}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);">Min. est.</div>
+        </div>
+        <div style="text-align:center;padding:8px 14px;background:var(--bg-secondary,#1e293b);border-radius:12px;">
+            <div style="font-size:1.5rem;font-weight:800;color:#f59e0b;">${personas}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);">Personas</div>
+        </div>
+    `;
+
+    // Tarjetas de marcas
+    const marcasGrid = document.getElementById('crono-marcas-grid');
+    const marcasData = [
+        { nombre: 'Alpina', tipo: alpina },
+        { nombre: 'Familia', tipo: familia },
+        { nombre: 'Fleischmann', tipo: fleischmann },
+        { nombre: 'Postobón', tipo: postobon },
+    ].filter(m => m.tipo);
+
+    marcasGrid.innerHTML = marcasData.map(m => {
+        const col = CRONO_COLORS[m.nombre] || CRONO_COLORS['Seguimiento'];
+        const tipoBadge = CRONO_TIPO_BADGE[m.tipo] || 'background:#334155;color:#cbd5e1;';
+        return `
+        <div style="background:var(--bg-secondary,#1e293b);border-radius:14px;padding:14px 16px;border-left:4px solid ${col.bg};">
+            <div style="font-weight:700;font-size:0.95rem;color:${col.bg};margin-bottom:8px;">${m.nombre}</div>
+            <span style="${tipoBadge} padding:3px 10px;border-radius:99px;font-size:0.78rem;font-weight:600;">${m.tipo}</span>
+        </div>`;
+    }).join('');
+
+    // Asignaciones del día
+    const asigGrid = document.getElementById('crono-asignaciones-grid');
+    const asigs = CRONO_ASIGNACION.filter(a => a[0] === fecha_iso);
+    if (asigs.length === 0) {
+        asigGrid.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">Sin asignaciones registradas para este día.</p>';
+        document.getElementById('crono-asignaciones-panel').style.display = '';
+    } else {
+        asigGrid.innerHTML = asigs.map((a, i) => {
+            const [, , persona, marca, conteo, refsN, minsN, quien] = a;
+            const col = CRONO_COLORS[marca] || CRONO_COLORS['Seguimiento'];
+            const tipoBadge = CRONO_TIPO_BADGE[conteo] || 'background:#334155;color:#cbd5e1;';
+            const quienHtml = quien
+                ? `<div style="font-size:0.76rem;color:var(--text-muted);margin-top:6px;font-style:italic;">${quien}</div>`
+                : '';
+            return `
+            <div style="background:var(--bg-secondary,#1e293b);border-radius:12px;padding:12px 14px;border-left:3px solid ${col.bg};">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-weight:700;font-size:0.82rem;color:${col.bg};">${persona}</span>
+                    <span style="${tipoBadge} padding:2px 8px;border-radius:99px;font-size:0.74rem;font-weight:600;">${conteo}</span>
+                </div>
+                <div style="font-size:0.9rem;font-weight:600;">${marca}</div>
+                <div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">${refsN} refs · ${minsN} min</div>
+                ${quienHtml}
+            </div>`;
+        }).join('');
+        document.getElementById('crono-asignaciones-panel').style.display = '';
+    }
+
+    // Seguimiento diario
+    const segRows = CRONO_SEGUIMIENTO.filter(s => s[0] === fecha_iso);
+    if (segRows.length > 0) {
+        if (segPanel) segPanel.style.display = '';
+        const total = segRows.length;
+        const done  = segRows.filter(s => cronoSeguimientoState[cronoSegKey(s[0], s[2], s[3])]).length;
+        const progrEl = document.getElementById('crono-seg-progreso');
+        if (progrEl) progrEl.textContent = `${done} / ${total} contadas`;
+
+        const tableEl = document.getElementById('crono-seguimiento-table');
+        const rows = segRows.map((s, idx) => {
+            const [f, dia, marca, cod, prod, alm] = s;
+            const key = cronoSegKey(f, marca, cod);
+            const checked = !!cronoSeguimientoState[key];
+            const col = CRONO_COLORS[marca] || CRONO_COLORS['Seguimiento'];
+            const almBadge = alm
+                ? `<span style="background:${alm==='FRIO'?'#1e3a5f':'#78350f'};color:${alm==='FRIO'?'#bfdbfe':'#fde68a'};padding:2px 7px;border-radius:99px;font-size:0.74rem;font-weight:600;">${alm}</span>`
+                : '';
+            return `<tr style="${checked ? 'opacity:0.45;' : ''}">
+                <td style="width:40px;text-align:center;">
+                    <input type="checkbox" ${checked ? 'checked' : ''} style="width:17px;height:17px;cursor:pointer;"
+                        onchange="cronoToggleSeg('${f}','${marca}','${cod}',this.checked)">
+                </td>
+                <td><span style="font-weight:700;color:${col.bg};font-size:0.82rem;">${marca}</span></td>
+                <td style="font-family:monospace;font-size:0.82rem;">${cod}</td>
+                <td style="font-size:0.85rem;max-width:260px;">${checked ? '<s>'+prod+'</s>' : prod}</td>
+                <td>${almBadge}</td>
+            </tr>`;
+        }).join('');
+
+        tableEl.innerHTML = `<table class="data-table" style="min-width:400px;">
+            <thead><tr>
+                <th style="width:40px;">✓</th>
+                <th>Marca</th>
+                <th>Código</th>
+                <th>Producto</th>
+                <th>Almacén</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+    } else {
+        if (segPanel) segPanel.style.display = 'none';
+    }
+
+    renderCronogramaTable();
+}
+
+function cronoToggleSeg(fecha_iso, marca, cod, checked) {
+    cronoLoadState();
+    const key = cronoSegKey(fecha_iso, marca, cod);
+    if (checked) cronoSeguimientoState[key] = true;
+    else delete cronoSeguimientoState[key];
+    cronoSaveState();
+    // Actualizar progreso sin re-renderizar todo
+    const segRows = CRONO_SEGUIMIENTO.filter(s => s[0] === fecha_iso);
+    const total = segRows.length;
+    const done  = segRows.filter(s => cronoSeguimientoState[cronoSegKey(s[0], s[2], s[3])]).length;
+    const progrEl = document.getElementById('crono-seg-progreso');
+    if (progrEl) progrEl.textContent = `${done} / ${total} contadas`;
+    // Tachar/destachar fila visualmente
+    const tr = document.querySelector(`input[onchange*="'${fecha_iso}','${marca}','${cod}'"]`);
+    if (tr) {
+        const row = tr.closest('tr');
+        if (row) {
+            row.style.opacity = checked ? '0.45' : '';
+            const tdProd = row.cells[3];
+            if (tdProd) {
+                const rawName = tdProd.textContent;
+                tdProd.innerHTML = checked ? `<s>${rawName}</s>` : rawName;
+            }
+        }
+    }
+}
+
+function renderCronogramaTable() {
+    const filterEl = document.getElementById('crono-filter-marca');
+    const filterMarca = filterEl ? filterEl.value : 'all';
+    const selectedDate = (document.getElementById('crono-date-filter') || {}).value || '';
+
+    const tbody = document.getElementById('crono-table-body');
+    if (!tbody) return;
+
+    const today = (() => {
+        const t = new Date();
+        return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+    })();
+
+    const filtered = CRONO_DATA.filter(r => {
+        if (filterMarca === 'all') return true;
+        // Verificar si la marca tiene algo en ese día
+        const idx = { 'Alpina': 3, 'Familia': 4, 'Fleischmann': 5, 'Postobón': 6 }[filterMarca];
+        return idx && r[idx];
+    });
+
+    tbody.innerHTML = filtered.map(r => {
+        const [fecha_iso, dia, semana, alpina, familia, fleischmann, postobon, refs, mins, personas, obs] = r;
+        const isSelected = fecha_iso === selectedDate;
+        const isHoy = fecha_iso === today;
+
+        const rowStyle = isHoy
+            ? 'background:rgba(22,163,74,0.12);font-weight:600;'
+            : (isSelected ? 'background:rgba(29,78,216,0.15);' : '');
+
+        const tipoBadge = (tipo) => {
+            if (!tipo) return '';
+            const s = CRONO_TIPO_BADGE[tipo] || 'background:#334155;color:#cbd5e1;';
+            return `<span style="${s} padding:2px 8px;border-radius:99px;font-size:0.74rem;font-weight:600;">${tipo}</span>`;
+        };
+
+        const [y,m,d] = fecha_iso.split('-');
+        const fechaDisplay = `${d}/${m}/${y}`;
+
+        return `<tr style="${rowStyle}" onclick="document.getElementById('crono-date-filter').value='${fecha_iso}'; renderCronograma();" style="cursor:pointer;">
+            <td>${fechaDisplay}${isHoy ? ' <span style="background:#16a34a;color:#fff;font-size:0.68rem;padding:1px 6px;border-radius:99px;vertical-align:middle;">HOY</span>' : ''}</td>
+            <td>${dia}</td>
+            <td>${semana}</td>
+            <td>${tipoBadge(alpina)}</td>
+            <td>${tipoBadge(familia)}</td>
+            <td>${tipoBadge(fleischmann)}</td>
+            <td>${tipoBadge(postobon)}</td>
+            <td style="text-align:center;font-weight:700;">${refs}</td>
+            <td style="text-align:center;">${mins}</td>
+            <td style="text-align:center;">${personas}</td>
+            <td style="font-size:0.8rem;color:var(--text-muted);max-width:200px;">${obs}</td>
+        </tr>`;
+    }).join('');
+
+    lucide.createIcons();
+}
+
+/** Se llama cuando se abre el tab cronograma */
+function initCronogramaTab() {
+    cronoLoadState();
+    const el = document.getElementById('crono-date-filter');
+    if (el && !el.value) el.value = cronoTodayOrFirst();
+    renderCronograma();
 }
 
 function showToast(message, type = 'info') {

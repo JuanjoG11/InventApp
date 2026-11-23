@@ -192,6 +192,9 @@
                     <button class="tab-btn" onclick="switchAdminTab('monitor')">
                         <i data-lucide="bar-chart-3"></i> Monitor en Vivo
                     </button>
+                    <button class="tab-btn" onclick="switchAdminTab('cronograma')">
+                        <i data-lucide="calendar-days"></i> Cronograma
+                    </button>
                     <button class="tab-btn" onclick="switchAdminTab('history')">
                         <i data-lucide="history"></i> Historial Completo
                     </button>
@@ -199,6 +202,30 @@
 
                 <!-- Admin Tab: Assign Tasks -->
                 <div id="admin-tab-assign" class="admin-tab-content active">
+
+                    <!-- CARGA AUTOMÁTICA POR CRONOGRAMA -->
+                    <div id="crono-auto-panel" class="section-card glass-panel" style="margin-bottom:1rem; border:2px solid rgba(99,102,241,0.4);">
+                        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                            <div style="flex:1;min-width:220px;">
+                                <h2 style="margin:0 0 4px;display:flex;align-items:center;gap:8px;">
+                                    <i data-lucide="zap" style="width:20px;height:20px;color:#818cf8;"></i>
+                                    Carga automática del cronograma
+                                </h2>
+                                <p id="crono-auto-desc" class="card-subtitle" style="margin:0;">Detectando día del cronograma…</p>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                <input type="date" id="crono-auto-date" class="input-form" style="padding:6px 10px;height:38px;min-width:155px;font-weight:700;" oninput="cronoPrevisualizarDia()">
+                                <button id="btn-crono-load" class="btn btn-primary" onclick="cronoCargarDia()" disabled>
+                                    <i data-lucide="download"></i> Cargar bloques del día
+                                </button>
+                            </div>
+                        </div>
+                        <!-- Previsualización de bloques que se van a crear -->
+                        <div id="crono-auto-preview" style="margin-top:1rem;display:none;">
+                            <p style="font-size:0.82rem;color:var(--text-muted);margin:0 0 8px;">Se crearán los siguientes bloques:</p>
+                            <div id="crono-auto-preview-grid" style="display:flex;flex-wrap:wrap;gap:8px;"></div>
+                        </div>
+                    </div>
 
                     <!-- Barra de carga: selector de bloque + proveedor + botón -->
                     <div class="section-card glass-panel">
@@ -361,6 +388,107 @@
 
                         <!-- Tabla agrupada por bloque — se renderiza desde updateAdminDashboard -->
                         <div id="monitor-blocks-container" class="margin-top-md"></div>
+                    </div>
+                </div>
+
+                <!-- Admin Tab: Cronograma -->
+                <div id="admin-tab-cronograma" class="admin-tab-content">
+
+                    <!-- Selector de semana / fecha -->
+                    <div class="section-card glass-panel" style="margin-bottom:1rem;">
+                        <div class="card-header-actions" style="flex-wrap:wrap; gap:12px; align-items:center;">
+                            <div>
+                                <h2 style="margin:0;"><i data-lucide="calendar-days" style="display:inline;width:20px;height:20px;vertical-align:middle;margin-right:6px;"></i> Cronograma TYM &amp; TAT</h2>
+                                <p class="card-subtitle" style="margin:4px 0 0;">20 noviembre – 31 diciembre 2026 · Conteos de inventario por marca</p>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                <label class="input-label" style="margin:0;white-space:nowrap;">Ver día:</label>
+                                <input type="date" id="crono-date-filter" class="input-form" style="padding:6px 10px; height:36px; min-width:160px;" oninput="renderCronograma()">
+                                <button class="btn btn-secondary btn-sm" onclick="cronogramaGoToday()">
+                                    <i data-lucide="calendar-check"></i> Hoy
+                                </button>
+                                <button class="btn btn-secondary btn-sm" onclick="cronogramaGoNext(-1)">
+                                    <i data-lucide="chevron-left"></i>
+                                </button>
+                                <button class="btn btn-secondary btn-sm" onclick="cronogramaGoNext(1)">
+                                    <i data-lucide="chevron-right"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Resumen del día seleccionado -->
+                    <div id="crono-day-panel" class="section-card glass-panel" style="margin-bottom:1rem; display:none;">
+                        <div id="crono-day-header" style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:1rem;">
+                            <div id="crono-day-badge" class="block-number-badge" style="font-size:1.6rem;width:64px;height:64px;border-radius:16px;flex-shrink:0;"></div>
+                            <div style="flex:1;min-width:200px;">
+                                <h2 id="crono-day-title" style="margin:0 0 4px;"></h2>
+                                <p id="crono-day-obs" style="margin:0;color:var(--text-muted);font-size:0.88rem;"></p>
+                            </div>
+                            <div id="crono-day-stats" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
+                        </div>
+
+                        <!-- Marcas del día -->
+                        <div id="crono-marcas-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:1.25rem;"></div>
+
+                        <!-- Asignaciones del día por persona -->
+                        <div id="crono-asignaciones-panel">
+                            <h3 style="font-size:0.95rem;font-weight:700;margin:0 0 10px;color:var(--text-secondary);">
+                                <i data-lucide="users" style="display:inline;width:16px;height:16px;vertical-align:middle;margin-right:4px;"></i>
+                                Asignaciones del día
+                            </h3>
+                            <div id="crono-asignaciones-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Seguimiento diario del día -->
+                    <div id="crono-seguimiento-panel" class="section-card glass-panel" style="margin-bottom:1rem; display:none;">
+                        <h3 style="font-size:0.95rem;font-weight:700;margin:0 0 12px;color:var(--text-secondary);">
+                            <i data-lucide="eye" style="display:inline;width:16px;height:16px;vertical-align:middle;margin-right:4px;"></i>
+                            Referencias de Seguimiento Diario
+                            <span id="crono-seg-progreso" style="font-weight:400;font-size:0.82rem;margin-left:8px;color:var(--text-muted);"></span>
+                        </h3>
+                        <div id="crono-seguimiento-table" style="overflow-x:auto;"></div>
+                    </div>
+
+                    <!-- Tabla completa del cronograma -->
+                    <div class="section-card glass-panel">
+                        <div class="card-header-actions" style="margin-bottom:1rem;">
+                            <h3 style="margin:0;font-size:0.95rem;font-weight:700;color:var(--text-secondary);">
+                                <i data-lucide="table-2" style="display:inline;width:16px;height:16px;vertical-align:middle;margin-right:4px;"></i>
+                                Cronograma completo (20 nov – 31 dic)
+                            </h3>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <label class="input-label" style="margin:0;white-space:nowrap;align-self:center;">Filtrar marca:</label>
+                                <select id="crono-filter-marca" class="input-form" style="padding:6px 10px;height:34px;" onchange="renderCronogramaTable()">
+                                    <option value="all">Todas</option>
+                                    <option value="Alpina">Alpina</option>
+                                    <option value="Familia">Familia</option>
+                                    <option value="Fleischmann">Fleischmann</option>
+                                    <option value="Postobón">Postobón</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="crono-full-table">
+                                <thead>
+                                    <tr>
+                                        <th>Fecha</th>
+                                        <th>Día</th>
+                                        <th>Sem.</th>
+                                        <th>Alpina</th>
+                                        <th>Familia</th>
+                                        <th>Fleischmann</th>
+                                        <th>Postobón</th>
+                                        <th>Refs.</th>
+                                        <th>Min. est.</th>
+                                        <th>Personas</th>
+                                        <th>Observación</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="crono-table-body"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
@@ -549,6 +677,7 @@
     </div>
 
     <div id="toast-container" class="toast-container"></div>
+    <script src="cronograma_data.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
