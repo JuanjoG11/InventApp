@@ -154,31 +154,50 @@ async function renderBlockSelector() {
 
     if (USE_SUPABASE && supabaseClient) {
         try {
-            // Solo traer publicaciones de HOY con payload no vacío
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-
+            // Traer la publicación activa más reciente que tenga bloques o payload reales
             const { data, error } = await supabaseClient
                 .from(SUPABASE_TASKS_TABLE)
                 .select('id, payload, blocks, status, created_at, numBlocks')
                 .eq('status', 'active')
-                .gte('created_at', todayStart.toISOString())
                 .order('created_at', { ascending: false })
-                .limit(1);
+                .limit(10);  // traer varios por si el más reciente está vacío
 
+            console.log('[renderBlockSelector] data:', data, 'error:', error);
             if (!error && data?.length > 0) {
-                const row = data[0];
-                // Preferir campo `blocks` (nuevo sistema); fallback a payload plano
-                if (row.blocks && typeof row.blocks === 'object' && Object.keys(row.blocks).length) {
-                    blocksData = row.blocks;
-                } else if (Array.isArray(row.payload) && row.payload.length > 0) {
-                    // Publicación del sistema antiguo: agrupar por _blockNum
-                    row.payload.forEach(t => {
-                        const bn = t._blockNum || 1;
-                        if (!blocksData[bn]) blocksData[bn] = [];
-                        blocksData[bn].push(t);
-                    });
+                // Buscar el primero que sea de hoy y tenga bloques o payload con contenido
+                const todayISO = (() => {
+                    const t = new Date();
+                    return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+                })();
+                const row = data.find(r => {
+                    const rawBlocks = r.blocks && typeof r.blocks === 'object' ? r.blocks : {};
+                    const realBlockKeys = Object.keys(rawBlocks).filter(k => k !== '__inventoryDate');
+                    const hasBlocks = realBlockKeys.length > 0;
+                    const hasPayload = Array.isArray(r.payload) && r.payload.length > 0;
+                    if (!hasBlocks && !hasPayload) return false;
+                    const recDate = r.inventory_date
+                        || r.blocks?.__inventoryDate
+                        || r.payload?.[0]?.inventoryDate
+                        || null;
+                    if (recDate && recDate !== todayISO) return false;  // de otro día → ignorar
+                    return true;
+                });
+                console.log('[renderBlockSelector] row elegido:', row);
+                if (row) {
+                    if (row.blocks && typeof row.blocks === 'object' && Object.keys(row.blocks).length) {
+                        blocksData = { ...row.blocks };
+                        delete blocksData.__inventoryDate;
+                    } else if (Array.isArray(row.payload) && row.payload.length > 0) {
+                        row.payload.forEach(t => {
+                            const bn = t._blockNum || 1;
+                            if (!blocksData[bn]) blocksData[bn] = [];
+                            blocksData[bn].push(t);
+                        });
+                    }
                 }
+                console.log('[renderBlockSelector] blocksData keys:', Object.keys(blocksData));
+            } else {
+                console.log('[renderBlockSelector] Sin datos activos en Supabase.');
             }
         } catch (e) {
             console.warn('renderBlockSelector fetch error', e);
@@ -260,13 +279,18 @@ async function loginWithBlock() {
 }
 
 function saveLocalSession() {
+    const todayISO = (() => {
+        const t = new Date();
+        return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+    })();
     const sessionData = {
         loggedIn: AppState.loggedIn,
         currentRole: AppState.currentRole,
         currentUserId: AppState.currentUserId,
         currentUserName: AppState.currentUserName,
         currentUserEmail: AppState.currentUserEmail,
-        currentBlock: AppState.currentBlock
+        currentBlock: AppState.currentBlock,
+        savedDate: todayISO,   // ← fecha en que se guardó la sesión
     };
     localStorage.setItem('ia_session', JSON.stringify(sessionData));
 }
@@ -282,6 +306,21 @@ async function restoreLocalSession() {
     try {
         const sessionData = JSON.parse(sessionString);
         if (!sessionData.loggedIn || !sessionData.currentRole) return false;
+
+        // Si la sesión es de un auxiliar de bloque guardada en otro día, descartarla.
+        // Esto evita que el auxiliar aparezca "logueado" al día siguiente sin que
+        // el admin haya publicado nada nuevo.
+        const todayISO = (() => {
+            const t = new Date();
+            return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+        })();
+        if (sessionData.currentRole === 'worker' && sessionData.currentBlock) {
+            if (sessionData.savedDate && sessionData.savedDate !== todayISO) {
+                console.log('Sesión de auxiliar de otro día — descartando:', sessionData.savedDate);
+                clearLocalSession();
+                return false;
+            }
+        }
 
         AppState.loggedIn = true;
         AppState.currentRole = sessionData.currentRole;
@@ -313,7 +352,7 @@ async function restoreLocalSession() {
         }
 
         if (AppState.currentRole === 'admin') {
-            setTimeout(() => cronoIniciarPanel(), 300);
+            setTimeout(() => { archivarRegistrosViejos(); cronoIniciarPanel(); }, 300);
         }
 
         return true;
@@ -666,7 +705,7 @@ async function signInUser(user) {
     showToast(`Bienvenido ${AppState.currentUserName}`, 'success');
     // Si el admin acaba de entrar, inicializar el panel de carga automática
     if (role === 'admin') {
-        setTimeout(() => cronoIniciarPanel(), 300);
+        setTimeout(() => { archivarRegistrosViejos(); cronoIniciarPanel(); }, 300);
     }
 }
 
@@ -787,8 +826,18 @@ async function fetchWorkerCounts() {
     }
     
     if (data && data.length > 0) {
+        // Solo conservar conteos de tareas que están publicadas HOY.
+        // Los task_id de días anteriores se ignoran para que el avance
+        // y el monitor no muestren números de jornadas pasadas.
+        const todayTaskIds = new Set(AppState.todayTasks.map(t => t.id));
+
+        const filtered = data.filter(record => {
+            const tid = record.task_id || record.item?.id;
+            return todayTaskIds.has(tid);
+        });
+
         // Convertir registros de worker_counts en AppState.counts
-        AppState.counts = data.map(record => ({
+        AppState.counts = filtered.map(record => ({
             item: record.item || { id: record.task_id },
             cajas: record.cajas,
             unidades: record.unidades,
@@ -827,8 +876,14 @@ async function fetchWorkerCountsForCurrentUser() {
     console.log('Conteos cargados:', data);
     
     if (data && data.length > 0) {
+        // Solo conservar conteos de tareas publicadas hoy
+        const todayTaskIds = new Set(AppState.todayTasks.map(t => t.id));
+        const filtered = data.filter(record => {
+            const tid = record.task_id || record.item?.id;
+            return todayTaskIds.has(tid);
+        });
         // Convertir registros de worker_counts en AppState.counts
-        AppState.counts = data.map(record => ({
+        AppState.counts = filtered.map(record => ({
             item: record.item || { id: record.task_id },
             cajas: record.cajas,
             unidades: record.unidades,
@@ -848,17 +903,13 @@ async function fetchWorkerCountsForCurrentUser() {
 async function fetchLatestTasks() {
     if (!supabaseClient) return;
 
-    // Solo cargar tareas publicadas HOY y con status active
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
+    // Cargar la publicación activa más reciente que tenga bloques o payload con contenido
     const { data, error } = await supabaseClient
         .from(SUPABASE_TASKS_TABLE)
         .select('id, payload, status, created_at, numBlocks, blocks')
         .eq('status', 'active')
-        .gte('created_at', todayStart.toISOString())
         .order('created_at', { ascending: false })
-        .limit(1);
+        .limit(10);
     if (error) {
         console.warn('Supabase tasks fetch error', error);
         if (error.status === 401) {
@@ -867,8 +918,27 @@ async function fetchLatestTasks() {
         return;
     }
 
-    if (data?.length > 0) {
-        const latest = data[0];
+    // Encontrar el registro más reciente con contenido real (saltar los de "finalizar día")
+    const todayISO = (() => {
+        const t = new Date();
+        return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+    })();
+
+    const latest = data?.find(r => {
+        const rawBlocks = r.blocks && typeof r.blocks === 'object' ? r.blocks : {};
+        const realBlockKeys = Object.keys(rawBlocks).filter(k => k !== '__inventoryDate');
+        const hasBlocks = realBlockKeys.length > 0;
+        const hasPayload = Array.isArray(r.payload) && r.payload.length > 0;
+        if (!hasBlocks && !hasPayload) return false;
+        const recDate = r.inventory_date
+            || r.blocks?.__inventoryDate
+            || r.payload?.[0]?.inventoryDate
+            || null;
+        if (recDate && recDate !== todayISO) return false;
+        return true;
+    });
+
+    if (latest) {
         if (Array.isArray(latest.payload) && latest.payload.length > 0) {
 
             // Si el admin tiene cambios locales sin publicar, NO sobreescribimos sus bloques
@@ -884,8 +954,11 @@ async function fetchLatestTasks() {
             AppState.todayTasks = latest.payload.map(task => ({ ...task }));
 
             // Restaurar bloques desde campo 'blocks'; fallback por _blockNum
+            // Eliminar __inventoryDate que se usa solo como metadato de fecha
             if (latest.blocks && typeof latest.blocks === 'object' && Object.keys(latest.blocks).length) {
-                AppState.blocks = latest.blocks;
+                const cleanBlocks = { ...latest.blocks };
+                delete cleanBlocks.__inventoryDate;
+                AppState.blocks = cleanBlocks;
             } else {
                 const rebuilt = {};
                 AppState.todayTasks.forEach(t => {
@@ -902,8 +975,26 @@ async function fetchLatestTasks() {
             if (publishedDate) {
                 AppState.inventoryDate = publishedDate;
             }
+
+        } else if (latest.blocks && typeof latest.blocks === 'object' && Object.keys(latest.blocks).length > 0) {
+            // blocks tiene datos pero payload está vacío (publicación desde cronograma nueva estructura)
+            if (AppState.currentRole === 'admin' && AppState.unpublishedChanges) {
+                await fetchWorkerCounts();
+                await fetchHistoryFromSupabase();
+                return;
+            }
+            AppState.blocks = latest.blocks;
+            const cleanBlocks2 = { ...latest.blocks };
+            delete cleanBlocks2.__inventoryDate;
+            AppState.blocks = cleanBlocks2;
+            const all = [];
+            Object.keys(cleanBlocks2).map(Number).sort((a,b)=>a-b).forEach(bn => {
+                (cleanBlocks2[bn] || []).forEach(item => all.push({ ...item, _blockNum: bn }));
+            });
+            AppState.todayTasks = all;
+            AppState.numBlocks = latest.numBlocks || Object.keys(AppState.blocks).length || 0;
         } else {
-            // Payload vacío → admin limpió el día (solo si no tiene cambios locales)
+            // Payload y blocks vacíos → admin limpió el día (solo si no tiene cambios locales)
             if (!AppState.unpublishedChanges) {
                 AppState.todayTasks = [];
                 AppState.blocks = {};
@@ -911,7 +1002,7 @@ async function fetchLatestTasks() {
             }
         }
     } else {
-        // No hay publicación activa hoy → limpiar estado local (solo si no tiene cambios locales)
+        // No hay publicación activa con contenido → limpiar estado local (solo si no tiene cambios locales)
         if (!AppState.unpublishedChanges) {
             AppState.todayTasks = [];
             AppState.blocks = {};
@@ -1042,13 +1133,27 @@ async function pushTasksToSupabase(forceEmpty = false) {
     const taskPayload = forceEmpty
         ? []
         : AppState.todayTasks.map(task => ({ ...task, inventoryDate: AppState.inventoryDate }));
+    // Fecha del inventario: usar la del estado o hoy
+    const todayISO = (() => {
+        const t = new Date();
+        return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+    })();
+    const invDate = forceEmpty ? null : (AppState.inventoryDate || todayISO);
+
+    // Embebemos la fecha dentro del JSON de blocks para validarla sin
+    // necesitar una columna nueva en Supabase.
+    const blocksWithDate = forceEmpty ? {} : Object.fromEntries(
+        Object.entries(AppState.blocks).map(([k,v]) => [k, v])
+    );
+    if (invDate && !forceEmpty) blocksWithDate.__inventoryDate = invDate;
+
     const taskRecord = {
         payload: taskPayload,
-        blocks: forceEmpty ? {} : AppState.blocks,          // estructura completa { 1: [...], 2: [...] }
+        blocks: blocksWithDate,
         numBlocks: forceEmpty ? 0 : AppState.numBlocks,
         published_by: AppState.currentUserId,
         published_by_email: AppState.currentUserEmail,
-        status: 'active'
+        status: 'active',
     };
 
     if (!supabaseAvailable) {
@@ -1967,6 +2072,52 @@ async function deleteSelectedTasks() {
     showToast('Tareas eliminadas localmente. Se sincronizará cuando haya conexión.', 'success');
 }
 
+/**
+ * Archiva en Supabase todos los registros active que sean de un día anterior a hoy.
+ * Se llama automáticamente cuando el admin inicia sesión.
+ * Evita que auxiliares vean bloques de días anteriores.
+ */
+async function archivarRegistrosViejos() {
+    if (!USE_SUPABASE || !supabaseClient || !navigator.onLine) return;
+    const todayISO = (() => {
+        const t = new Date();
+        return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0');
+    })();
+    try {
+        // Traer todos los active
+        const { data, error } = await supabaseClient
+            .from(SUPABASE_TASKS_TABLE)
+            .select('id, created_at, inventory_date, payload')
+            .eq('status', 'active');
+        if (error || !data?.length) return;
+
+        const viejos = data.filter(r => {
+            const recDate = r.inventory_date
+                || r.blocks?.__inventoryDate
+                || r.payload?.[0]?.inventoryDate
+                || null;
+            if (!recDate) {
+                // Sin fecha: usar created_at para decidir si es de hoy
+                const created = r.created_at ? r.created_at.slice(0,10) : null;
+                return created && created !== todayISO;
+            }
+            return recDate !== todayISO;
+        });
+
+        if (!viejos.length) return;
+
+        const ids = viejos.map(r => r.id);
+        await supabaseClient
+            .from(SUPABASE_TASKS_TABLE)
+            .update({ status: 'archived' })
+            .in('id', ids);
+
+        console.log(`[archivarRegistrosViejos] ${ids.length} registro(s) de días anteriores archivados.`);
+    } catch(e) {
+        console.warn('archivarRegistrosViejos error:', e);
+    }
+}
+
 async function publishDailyTask() {
     const blockNums = Object.keys(AppState.blocks).map(Number).sort((a, b) => a - b);
     if (!blockNums.length) {
@@ -2001,8 +2152,9 @@ async function publishDailyTask() {
                     .map(c => c.id);
                 preservedCount = existingCounts.length - orphanedCountIds.length;
 
-                // Solo advertir si hay conteos que realmente se van a borrar
-                if (orphanedCountIds.length > 0) {
+                // Si TODOS son huérfanos es un cambio de día → limpiar sin preguntar.
+                // Solo preguntar si hay conteos mezclados (mismo día, productos distintos).
+                if (orphanedCountIds.length > 0 && preservedCount > 0) {
                     const proceed = confirm(
                         `⚠️ Hay ${orphanedCountIds.length} conteo(s) de productos que ya no están en los bloques publicados.\n\n` +
                         `Se conservarán ${preservedCount} conteo(s) de los bloques activos.\n\n` +
@@ -2010,6 +2162,7 @@ async function publishDailyTask() {
                     );
                     if (!proceed) return;
                 }
+                // Si preservedCount === 0: todos son de otro día → se borran silenciosamente
             }
         } catch (e) {
             console.warn('Error verificando conteos activos antes de publicar:', e);
